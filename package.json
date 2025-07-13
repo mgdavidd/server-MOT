@@ -1,0 +1,25 @@
+{
+  "name": "video",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@libsql/client": "^0.15.9",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "google-auth-library": "^10.1.0",
+    "googleapis": "^150.0.1",
+    "luxon": "^3.6.1",
+    "multer": "^2.0.1",
+    "socket.io": "^4.8.1"
+  }
+}
