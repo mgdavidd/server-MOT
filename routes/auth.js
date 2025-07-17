@@ -15,8 +15,8 @@ router.post("/login", async (req, res) => {
   const { userName, password } = req.body;
   try {
     const result = await db.execute(
-      "SELECT * FROM usuarios WHERE (nombre = ? OR email = ?) AND contrasena = ?",
-      [userName, userName, password]
+      "SELECT * FROM usuarios WHERE (nombre = ? OR email = ? OR nombre_usuario = ?) AND contrasena = ?",
+      [userName, userName, userName, password]
     );
 
     if (result.rows.length > 0) {
@@ -166,5 +166,18 @@ router.post("/updateArea", async (req, res) => {
   ]);
   res.status(202);
 });
+
+router.get("/user/:id", async (req, res) => {
+  const result = await db.execute(
+    "SELECT * FROM usuarios WHERE id = ? ",
+    [req.params.id]
+  )
+
+  if(result.rows.length > 0){
+    console.log(result)
+    return res.send( result)
+  }
+  return res.send(result.rows)
+})
 
 module.exports = router;

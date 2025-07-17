@@ -13,9 +13,17 @@ const server = http.createServer(app);
 // const io = socketIo(server);
 
 app.use(cors({
-  origin: "http://localhost:5173",
-  credentials: true // permite el uso de cookies si las usas
+  origin: (origin, callback) => {
+    const allowedOrigins = ["http://localhost:5174","http://localhost:5173"];
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("No permitido por CORS"));
+    }
+  },
+  credentials: true,
 }));
+
 
 app.use(cookieParser());
 app.use(express.json({ limit: "500mb" }));
