@@ -131,9 +131,10 @@ router.get("/modules/course/:courseId", async (req, res) => {
   }
 })
 
-router.post("modules/course/:courseId", async (req, res) => {
-  const { courseId } =req.param;
+router.post("/modules/course/:courseId", async (req, res) => {
+  const { courseId } =req.params;
   const { title, color} = req.body;
+  console.log(courseId, title, color);
   await db.execute(
     "INSERT INTO modulos (id_curso, nombre, color) VALUES (?,?,?)", [courseId, title, color]
   ).then(() => {
