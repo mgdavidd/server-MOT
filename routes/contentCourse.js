@@ -131,6 +131,27 @@ router.get("/modules/course/:courseId", async (req, res) => {
   }
 })
 
+router.post("modules/course/:courseId", async (req, res) => {
+  const { courseId } =req.param;
+  const { title, color} = req.body;
+  await db.execute(
+    "INSERT INTO modulos (id_curso, nombre, color) VALUES (?,?,?)", [courseId, title, color]
+  ).then(() => {
+    res.json({
+      success: true,
+      message: "Módulo creado correctamente",
+    });
+  })
+  .catch(error => {
+    console.error("Error creando módulo:", error);
+    res.status(500).json({
+      success: false,
+      error: "Error al crear módulo",
+    });
+  })
+  
+})
+
 router.get("/courses/content/:curso", async (req, res) => {
   const { curso } = req.params
   const courseContent = await db.execute(
