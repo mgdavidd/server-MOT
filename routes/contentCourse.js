@@ -114,6 +114,23 @@ router.post("/update-recording/", async (req, res) => {
   }
 });
 
+router.get("/modules/course/:courseId", async (req, res) => {
+  const { courseId } = req.params;
+  try{
+    const modules = await db.execute(
+      "SELECT * FROM modulos WHERE id_curso = ? ORDER BY id ASC",
+      [courseId]
+    );
+    if(modules.rows.length === 0) {
+      return res.status(404).json({error: "No se encontraron Modulos para este curso"})
+    }
+    res.json(modules.rows)
+  }catch (err) {
+    console.error("Error obteniendo modulos:", err);
+    res.status(500).json({error: "Error al obtener modulos del curso " + courseId});
+  }
+})
+
 router.get("/courses/content/:curso", async (req, res) => {
   const { curso } = req.params
   const courseContent = await db.execute(
