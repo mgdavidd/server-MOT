@@ -5,6 +5,7 @@ router.use("/", require("./auth"));
 router.use("/", require("./calendar"));
 router.use("/", require("./courses"));
 router.use("/", require("./profile"));
+router.use("/", require("./contentCourse"));
 // router.use("/", require("./recording"));
 
 module.exports = router;

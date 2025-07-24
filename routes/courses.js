@@ -3,31 +3,32 @@ const router = express.Router();
 const db = require("../db");
 const { DateTime } = require("luxon");
 
-router.get("/my-courses/:userEmail", async (req, res) => {
-  const result = await db.execute(
-    "SELECT c.id, c.nombre, c.tipoCurso, c.genero FROM cursos c JOIN usuarios u ON  u.id = c.admin WHERE u.email = ?",
-    [req.params.userEmail]
-  )
+// 
+router.get("/teachers/:userId/courses", async (req, res) => {
+  const userId = req.params.userId;
+  const result = await db.execute("SELECT * FROM cursos WHERE admin = ?", [userId]);
 
-  if(result.rows.length > 0){
-    console.log(result)
-    return res.send( result)
-  }
-  return res.send(result.rows)
-})
+  const cursos = result.rows.map(curso => ({
+    ...curso,
+    isOwner: true
+  }));
+
+  return res.send(cursos);
+});
 
 router.post("/create-course", async (req, res) => {
   const {
     nombre,
-    precio,
+    costo,
     descripcion,
     admin,
     tipoCurso,
-    genero
+    area,
+    imagen,
   } = req.body;
 
   // Validar campos requeridos
-  if (!nombre || !admin || !tipoCurso || !genero) {
+  if (!nombre || !admin || !tipoCurso || !area || !imagen) {
     return res.status(400).json({ error: "Faltan campos obligatorios" });
   }
 
@@ -38,7 +39,7 @@ router.post("/create-course", async (req, res) => {
     );
 
     if (usuario.rows.length === 0) {
-      return res.status(403).json({ error: "Solo los profesores pueden crear cursos" });
+      return res.json({ error: "Solo los profesores pueden crear cursos" });
     }
 
     const cursoExistente = await db.execute(
@@ -47,15 +48,15 @@ router.post("/create-course", async (req, res) => {
     );
 
     if (cursoExistente.rows.length > 0) {
-      return res.status(409).json({ error: "Ya existe un curso con ese nombre para este profesor" });
+      return res.json({ error: "Ya existe un curso con ese nombre para este profesor" });
     }
-
-    const fechaActual = DateTime.now().toISO({ suppressMilliseconds: true });
+    //fecha en utc
+    const fechaActual = DateTime.utc().toISO();
 
     await db.execute(
-      `INSERT INTO cursos (nombre, fecha, precio, descripcion, admin, tipoCurso, genero)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [nombre,fechaActual, precio || null, descripcion || null, admin, tipoCurso,genero]
+      `INSERT INTO cursos (nombre, fecha, precio, descripcion, admin, tipoCurso, genero, portada)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [nombre,fechaActual, costo || null, descripcion || null, admin, tipoCurso, area, imagen]
     );
 
     return res.status(201).json({ success: true, message: "Curso creado exitosamente" });
