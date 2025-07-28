@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../db"); // ajusta si tu conexión está en otro archivo
+const db = require("../db");
 
 router.put("/edit-profile/:id", async (req, res) => {
   const { id } = req.params;

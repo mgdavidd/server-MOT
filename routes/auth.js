@@ -3,6 +3,9 @@ const router = express.Router();
 const db = require("../db");
 const { OAuth2Client } = require("google-auth-library");
 const { google } = require("googleapis");
+const jwt = require("jsonwebtoken");
+
+const JWT_SECRET = process.env.JWT_SECRET || "clave_super_segura";
 
 const oAuth2Client = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID,
@@ -10,7 +13,6 @@ const oAuth2Client = new OAuth2Client(
   process.env.GOOGLE_REDIRECT_URI
 );
 
-// login
 router.post("/login", async (req, res) => {
   const { userName, password } = req.body;
   try {
@@ -21,7 +23,18 @@ router.post("/login", async (req, res) => {
 
     if (result.rows.length > 0) {
       const user = result.rows[0];
-      return res.json({ success: true, user });
+      const token = jwt.sign(
+        {
+          id: user.id,
+          email: user.email,
+          nombre: user.nombre,
+          role: user.rol,
+        },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+
+      return res.json({ success: true, user, token });
     }
     res.status(401).json({ error: "Credenciales incorrectas" });
   } catch (err) {
@@ -30,7 +43,6 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// signup
 router.post("/signup", async (req, res) => {
   const { userName, email, password, isAdmin } = req.body;
 
@@ -60,15 +72,24 @@ router.post("/signup", async (req, res) => {
     const result = await db.execute("SELECT * FROM usuarios WHERE nombre = ?", [
       userName,
     ]);
+    const user = result.rows[0];
+    const token = jwt.sign(
+      {
+        id: user.id,
+        email: user.email,
+        role: user.rol,
+      },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
 
-    return res.json({ success: true, user: result.rows[0] });
+    return res.json({ success: true, user, token });
   } catch (err) {
     console.error("Error en registro:", err);
     res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 
-// elegir nombre de usuario tras Google Auth
 router.post("/choose-username", async (req, res) => {
   const { userName, password, email, google_token } = req.body;
 
@@ -168,16 +189,15 @@ router.post("/updateArea", async (req, res) => {
 });
 
 router.get("/user/:id", async (req, res) => {
-  const result = await db.execute(
-    "SELECT * FROM usuarios WHERE id = ? ",
-    [req.params.id]
-  )
+  const result = await db.execute("SELECT * FROM usuarios WHERE id = ? ", [
+    req.params.id,
+  ]);
 
-  if(result.rows.length > 0){
-    console.log(result)
-    return res.send( result)
+  if (result.rows.length > 0) {
+    console.log(result);
+    return res.send(result);
   }
-  return res.send(result.rows)
-})
+  return res.send(result.rows);
+});
 
 module.exports = router;
