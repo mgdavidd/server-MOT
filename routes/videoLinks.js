@@ -70,29 +70,4 @@ router.get('/api/video-links/:token', async (req, res) => {
   }
 });
 
-
-// router.get("/api/google-drive-folder/:adminUserName", (req, res) => {
-//   const { adminUserName } = req.params
-//   const folderUser = db.execute(
-//     "SELECT google_drive_folder_id FROM usuarios WHERE nombre = ?",[ adminUserName ]
-//   )
-//   folderUser.then((result) => {
-//     if (result.length > 0) {
-//       res.json({ folderId: result[0].google_drive_folder_id });
-//     } else {
-//       const folder = getAdminDriveClient(adminUserName);
-//       folder.then((driveFolder) => {
-//         if (driveFolder) {
-//           res.json({ folderId: driveFolder.id });
-//         } else {
-//           res.status(404).json({ error: 'Carpeta no encontrada en Google Drive' });
-//         }
-//       });
-//     }
-//   }).catch((err) => {
-//     console.error('Error al obtener la carpeta de Google Drive:', err);
-//     res.status(500).json({ error: 'Error en el servidor' });
-//   });
-// })
-
 module.exports = router;
