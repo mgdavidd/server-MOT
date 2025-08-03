@@ -12,7 +12,7 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname); // conserva la extensión original
+    const ext = path.extname(file.originalname);
     cb(null, `upload-${Date.now()}${ext}`);
   },
 });

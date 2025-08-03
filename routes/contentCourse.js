@@ -30,12 +30,11 @@ router.get("/my-recordings/:userId/:courseId", async (req, res) => {
   }
 });
 
-// para subir grabación desde videollamada
 router.post("/api/upload-recording", upload.single("recording"), async (req, res) => {
   try {
     if (!req.file) throw new Error("Archivo no recibido");
 
-    const { adminUserName } = req.body;
+    const { adminUserName, selectedModuleId } = req.body;
     if (!adminUserName) throw new Error("Faltan datos obligatorios");
 
     const { auth, folderId } = await getAdminDriveClient(adminUserName);
@@ -69,12 +68,13 @@ router.post("/api/upload-recording", upload.single("recording"), async (req, res
     if (!fechaId) throw new Error("No se encontró la sesión para la fecha actual");
 
     await db.execute(
-      `INSERT INTO grabaciones (idFecha, titulo, link)
-       VALUES (?, ?, ?)`,
+      `INSERT INTO grabaciones (idFecha, titulo, link, id_modulo)
+       VALUES (?, ?, ?, ?)`,
       [
         fechaId,
         `Grabación ${now.toFormat("yyyyLLdd-HHmmss")}`,
         data.webViewLink,
+        selectedModuleId
       ]
     );
 
@@ -118,7 +118,6 @@ router.post("/update-recording", async (req, res) => {
   }
 });
 
-// 📦 Resto de endpoints (módulos y contenido)
 router.get("/modules/course/:courseId", async (req, res) => {
   const { courseId } = req.params;
   try {
@@ -167,12 +166,13 @@ router.get("/courses/content/:curso", async (req, res) => {
   res.json(courseContent.rows);
 });
 
-// subir contenido general
-router.post("/upload-course-content", upload.single("file"), async (req, res) => {
+router.post("/upload-module-content/:moduleId", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) throw new Error("Archivo no recibido");
 
-    const { courseName, moduleId, adminUserName, title } = req.body;
+    const { courseName, adminUserName, title } = req.body;
+    const { moduleId } = req.params;
+
     if (!courseName || !moduleId || !adminUserName || !title) {
       throw new Error("Faltan datos obligatorios");
     }
@@ -206,12 +206,9 @@ router.post("/upload-course-content", upload.single("file"), async (req, res) =>
       success: true,
       fileLink: data.webViewLink,
     });
+
   } catch (error) {
     console.error("Error subiendo contenido:", error);
-
-    if (req.file?.path && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
 
     res.status(500).json({
       error: "Error al subir el contenido",
@@ -219,5 +216,50 @@ router.post("/upload-course-content", upload.single("file"), async (req, res) =>
     });
   }
 });
+
+router.get("/courses/:courseId/modules/:userId", async (req, res) => {
+  const { courseId, userId } = req.params;
+
+  try {
+    const accessCheck = await db.execute(`
+      SELECT 1 FROM cursos c
+      LEFT JOIN cursos_estudiante ce ON ce.idCurso = c.id AND ce.idUsuario = ?
+      WHERE c.id = ? AND (c.admin = ? OR ce.idUsuario IS NOT NULL)
+    `, [userId, courseId, userId]);
+
+    if (accessCheck.rows.length === 0) {
+      return res.status(403).json({ error: "No tienes acceso a este curso" });
+    }
+
+    const result = await db.execute(
+      "SELECT * FROM modulos WHERE id_curso = ? ORDER BY id",
+      [courseId]
+    );
+
+    return res.json(result.rows);
+  } catch (error) {
+    console.error("Error al obtener módulos:", error);
+    return res.status(500).json({ error: "Error del servidor" });
+  }
+});
+
+router.get("/modules/recordings/:moduleId", async (req, res) => {
+  const { moduleId } = req.params;
+  try {
+    const recordings = await db.execute(
+      "SELECT g.id, g.titulo, g.link, f.inicio FROM grabaciones g JOIN fechas f ON g.idFecha = f.id WHERE g.id_modulo = ? ORDER BY g.id ASC",
+      [moduleId]
+    );
+    res.json(recordings.rows);
+  } catch (error) {
+    console.error("Error obteniendo grabaciones:", error);
+    res.status(500).json({
+      error: "Error al obtener grabaciones del módulo",
+      details: error.message,
+    });
+  }
+});
+
+
 
 module.exports = router;

@@ -6,11 +6,11 @@ const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { DateTime } = require("luxon");
 
-// GET fechas
 router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   const { selectedCourseId } = req.params;
 
   try {
+    // Verificar que el curso existe
     const result = await db.execute("SELECT 1 FROM cursos WHERE id = ?", [
       selectedCourseId,
     ]);
@@ -18,12 +18,17 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
       return res.status(404).json({ message: "Curso no existe" });
     }
 
+    // Obtener fechas desde 2 semanas atrás
     const limiteInferior = DateTime.utc().minus({ weeks: 2 }).toISO();
 
     const fechas = await db.execute(
       `SELECT
-         f.id, f.inicio, f.final, f.tipo_encuentro AS tipo,
-         f.titulo, f.link_mot AS join_link,
+         f.id, 
+         f.inicio, 
+         f.final, 
+         f.tipo_encuentro AS tipo,
+         f.titulo, 
+         f.link_mot AS join_link,
          g.link AS recording_url
        FROM fechas f
        LEFT JOIN grabaciones g ON g.idFecha = f.id
@@ -32,30 +37,31 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
       [selectedCourseId, limiteInferior]
     );
 
-    const fechasConZonaHoraria = fechas.rows.map((fecha) => ({
+    // Devolver las fechas exactamente como están en la base de datos (UTC)
+    const fechasFormateadas = fechas.rows.map((fecha) => ({
       ...fecha,
-      inicio: DateTime.fromISO(fecha.inicio, { zone: "utc" }).toLocal().toISO(),
-      final: DateTime.fromISO(fecha.final, { zone: "utc" }).toLocal().toISO(),
+      inicio: fecha.inicio, // Mantener UTC
+      final: fecha.final,   // Mantener UTC
       titulo: fecha.titulo,
       tipo: fecha.tipo,
       join_link: fecha.join_link,
       recording_url: fecha.recording_url,
     }));
 
-    return res.json(fechasConZonaHoraria);
+    return res.json(fechasFormateadas);
   } catch (err) {
     console.error("Error obteniendo fechas:", err);
     return res.status(500).json({ error: "Error del servidor" });
   }
 });
 
-// POST fechas
 router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   const { sessions = [] } = req.body;
   const { selectedCourseId } = req.params;
+  const todayUTC = DateTime.now().setZone('UTC').startOf('day');
 
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.split(" ")[1];
+  // Verificación de token
+  const token = req.headers.authorization?.split(" ")[1];
   let userPayload;
   try {
     userPayload = jwt.verify(token, JWT_SECRET);
@@ -64,137 +70,94 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   }
 
   try {
-    // Verificar propiedad del curso
-    const courseOwnership = await db.execute(
+    const isOwner = (await db.execute(
       `SELECT id FROM cursos WHERE id = ? AND admin = ?`,
       [selectedCourseId, userPayload.id]
-    );
+    )).rows.length > 0;
 
-    if (courseOwnership.rows.length === 0) {
-      return res
-        .status(403)
-        .json({ error: "No tienes permiso para modificar este curso" });
+    if (!isOwner) {
+      return res.status(403).json({ error: "No autorizado" });
     }
 
-    if (!Array.isArray(sessions)) {
-      return res.status(400).json({ error: "Formato inválido" });
-    }
-
-    // Obtener fechas existentes
-    const fechasExistentes = await db.execute(
-      `SELECT id, fecha_date FROM fechas WHERE idCurso = ?`,
-      [selectedCourseId]
-    );
-
-    const fechasAMantener = sessions.map((s) => s.date);
-
-    const idsAEliminar = fechasExistentes.rows
-      .filter((row) => !fechasAMantener.includes(row.fecha_date))
-      .map((row) => row.id);
-
-    if (idsAEliminar.length > 0) {
-      const placeholders = idsAEliminar.map(() => "?").join(",");
-      await db.execute(
-        `DELETE FROM fechas WHERE id IN (${placeholders})`,
-        idsAEliminar
-      );
-    }
-
-    // Procesar sesiones
+    const results = [];
     for (const s of sessions) {
-      const {
-        date,
-        start_time,
-        end_time,
-        titulo = "Clase",
-        type = "Clase en vivo",
-      } = s;
+      const { date, start_time, end_time, titulo = "Clase", type = "Clase en vivo" } = s;
+      
+      if (!date || !start_time || !end_time) {
+        console.error("Campos faltantes:", { date, start_time, end_time });
+        continue;
+      }
 
-      if (!date || !start_time || !end_time) continue;
+      if (!/^\d{2}:\d{2}$/.test(start_time) || !/^\d{2}:\d{2}$/.test(end_time)) {
+        console.error("Formato de hora inválido:", { start_time, end_time });
+        continue;
+      }
 
-      // Convertir de local a UTC antes de guardar
-      const inicioLocal = DateTime.fromISO(`${date}T${start_time}`).toLocal();
-      const finalLocal = DateTime.fromISO(`${date}T${end_time}`).toLocal();
+      const dateUTC = DateTime.fromISO(date, { zone: 'utc' }).startOf('day');
+      const startUTC = DateTime.fromISO(`${date}T${start_time}`, { zone: 'utc' });
+      const endUTC = DateTime.fromISO(`${date}T${end_time}`, { zone: 'utc' });
 
-      const inicioISO = inicioLocal.toUTC().toISO();
-      const finalISO = finalLocal.toUTC().toISO();
 
+      if (endUTC <= startUTC) {
+        console.error(`Hora final debe ser mayor a hora inicial (${start_time} - ${end_time})`);
+        continue;
+      }
+
+      // Generar link de videochat
       let link_mot = null;
+      if (type === "Clase en vivo") {
+        try {
+          const VIDEOCHAT_URL = process.env.VIDEOCHAT_API || "http://localhost:3001";
+          const payload = {
+            course_id: selectedCourseId,
+            session_date: date,
+            start_time,
+            end_time,
+            user_id: userPayload.id
+          };
 
-      try {
-        const VIDEOCHAT_URL =
-          process.env.VIDEOCHAT_API || "http://localhost:3001";
-        const inicioUTC = DateTime.fromISO(inicioISO).toUTC().toFormat("HH:mm");
-        const finalUTC = DateTime.fromISO(finalISO).toUTC().toFormat("HH:mm");
-
-        const payload = {
-          course_id: selectedCourseId,
-          session_date: date,
-          start_time: inicioUTC,
-          end_time: finalUTC,
-          email: userPayload.email,
-          role: userPayload.role,
-          user_id: userPayload.id,
-          title: titulo,
-        };
-
-        const tokenMOT = jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
-
-        const resp = await Promise.race([
-          axios.post(`${VIDEOCHAT_URL}/api/calls`, payload, {
-            headers: { Authorization: `Bearer ${tokenMOT}` },
-          }),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Timeout de video")), 3000)
-          ),
-        ]);
-
-        link_mot = resp.data.link;
-      } catch (err) {
-        console.error("Error generando link:", err.message);
+          const { data } = await axios.post(
+            `${VIDEOCHAT_URL}/api/calls`,
+            payload,
+            { headers: { Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}` } }
+          );
+          link_mot = data.link;
+        } catch (err) {
+          console.error("Error al generar sala:", err.message);
+        }
       }
 
       try {
         await db.execute(
           `INSERT INTO fechas (
-             inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date
-           ) VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
-             inicio = excluded.inicio,
-             final = excluded.final,
-             tipo_encuentro = excluded.tipo_encuentro,
-             titulo = excluded.titulo,
-             link_mot = COALESCE(excluded.link_mot, fechas.link_mot)`,
-          [inicioISO, finalISO, type, selectedCourseId, titulo, link_mot, date]
+            inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
+            inicio = excluded.inicio,
+            final = excluded.final,
+            titulo = excluded.titulo,
+            link_mot = COALESCE(excluded.link_mot, fechas.link_mot)`,
+          [
+            startUTC.toISO(), 
+            endUTC.toISO(), 
+            type, 
+            selectedCourseId, 
+            titulo, 
+            link_mot, 
+            date
+          ]
         );
+        results.push({ date, status: "success" });
       } catch (dbError) {
         console.error("Error en DB:", dbError.message);
-
-        await db.execute(
-          `UPDATE fechas SET
-             inicio = ?,
-             final = ?,
-             tipo_encuentro = ?,
-             titulo = ?,
-             link_mot = COALESCE(?, link_mot)
-           WHERE idCurso = ? AND fecha_date = ?`,
-          [inicioISO, finalISO, type, titulo, link_mot, selectedCourseId, date]
-        );
+        results.push({ date, status: "failed" });
       }
     }
 
-    return res.json({ success: true });
+    return res.json({ results });
   } catch (err) {
-    console.error("Error en calendar.js:", {
-      message: err.message,
-      stack: err.stack,
-      body: req.body,
-      params: req.params,
-    });
-    return res.status(500).json({
-      error: "Error al guardar el calendario",
-      details: process.env.NODE_ENV === "development" ? err.message : null,
-    });
+    console.error("Error crítico:", err);
+    return res.status(500).json({ error: "Error al procesar solicitud" });
   }
 });
 

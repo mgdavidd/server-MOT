@@ -200,4 +200,29 @@ router.get("/user/:id", async (req, res) => {
   return res.send(result.rows);
 });
 
+router.post("/isUserAllowed", async (req, res) => {
+  const apiKey = req.headers.authorization?.split(" ")[1];
+
+  if (apiKey !== process.env.INTERNAL_API_KEY) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+
+  const { userId, courseId } = req.body;
+  const result = await db.execute(
+    `SELECT 1 FROM cursos_estudiante WHERE idUsuario = ? AND idCurso = ?`,
+    [userId, courseId]
+  );
+
+  const isTeacher = await db.execute(
+    `SELECT 1 FROM cursos WHERE id = ? AND admin = ?`,
+    [courseId, userId]
+  );
+
+  if (result.rows.length > 0 || isTeacher.rows.length > 0) {
+    return res.json({ allowed: true });
+  }
+
+  return res.json({ allowed: false });
+});
+
 module.exports = router;

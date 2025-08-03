@@ -37,16 +37,16 @@ app.use(routes);
 // WebSocket
 // require("./routes/socket")(io);
 
-// Cierre limpio (opcional)
-// const { uploadDir } = require("./uploadConfig");
-// const fs = require("fs");
+// 
+const { uploadDir } = require("./uploadConfig");
+const fs = require("fs");
 
-// process.on("SIGINT", () => {
-//   if (fs.existsSync(uploadDir)) {
-//     fs.rmSync(uploadDir, { recursive: true, force: true });
-//   }
-//   process.exit();
-// });
+process.on("SIGINT", () => {
+  if (fs.existsSync(uploadDir)) {
+    fs.rmSync(uploadDir, { recursive: true, force: true });
+  }
+  process.exit();
+});
 
 // Start
 const PORT = process.env.PORT || 3000;

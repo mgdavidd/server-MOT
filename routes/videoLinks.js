@@ -24,7 +24,7 @@ router.get('/api/video-links/:token', async (req, res) => {
 
   let userPayload;
   try {
-    userPayload = jwt.verify(userJwt, JWT_SECRET); // token del usuario que se conecta
+    userPayload = jwt.verify(userJwt, JWT_SECRET);
   } catch (err) {
     return res.status(401).json({ error: 'Usuario no autenticado' });
   }
@@ -32,7 +32,6 @@ router.get('/api/video-links/:token', async (req, res) => {
   const userEmail = userPayload.email;
 
   try {
-    // Obtener curso asociado y fechas programadas
     db.get(`SELECT * FROM fechas WHERE link_mot = ?`, [roomId], async (err, fecha) => {
       if (err || !fecha) return res.status(404).json({ error: 'Sala no encontrada' });
 
