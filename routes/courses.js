@@ -67,17 +67,56 @@ router.post("/create-course", async (req, res) => {
   }
 });
 
-router.get("/courses/student/:userId", async (req, res) => {
+router.get("/AllCourses/:preferences", async (req, res) => {
   try {
-    const listCourses = await db.execute(
-      "SELECT c.id, c.nombre, c.descripcion, c.tipoCurso FROM cursos c JOIN cursos_estudiante ce ON ce.idCurso = c.id WHERE ce.idUsuario = ?",
-      [req.params.userId]
-    )
+    const preferences = decodeURIComponent(req.params.preferences);
 
-    res.json(listCourses.rows)
+    const result = await db.execute({
+      sql: "SELECT * FROM cursos ORDER BY genero = ? DESC",
+      args: [preferences],
+    });
+
+    const coursesWithImages = result.rows.map((course) => {
+      if (course.portada) {
+        // Si ya contiene data:image/... devolver tal cual
+        const portadaStr = course.portada.toString();
+        if (portadaStr.startsWith("data:image")) {
+          course.imagen = portadaStr;
+        } else {
+          // Si por algún motivo es binario puro, entonces sí convertirlo
+          const base64Image = Buffer.from(course.portada).toString("base64");
+          course.imagen = `data:image/jpeg;base64,${base64Image}`;
+        }
+      } else {
+        course.imagen = null;
+      }
+      delete course.portada;
+      return course;
+    });
+
+    res.json(coursesWithImages);
   } catch (error) {
-    console.log(error)
+    console.error("Error obteniendo cursos:", error);
+    res.status(500).json({ error: "Error interno del servidor" });
   }
-})
+});
+
+
+router.get("/filterCourses/:string", async (req, res) => {
+  const { string } = req.params;
+
+  try {
+    const [courses] = await db.execute(
+      "SELECT * FROM cursos WHERE nombre LIKE ? OR descripcion = ?",
+      [`%${string}%`,`%${string}%`]
+    );
+
+    res.json(courses);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error al filtrar cursos" });
+  }
+});
+
 
 module.exports = router;
