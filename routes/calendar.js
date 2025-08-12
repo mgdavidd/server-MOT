@@ -29,7 +29,8 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
          f.tipo_encuentro AS tipo,
          f.titulo, 
          f.link_mot AS join_link,
-         g.link AS recording_url
+         g.link AS recording_url,
+         f.room_id
        FROM fechas f
        LEFT JOIN grabaciones g ON g.idFecha = f.id
        WHERE f.idCurso = ? AND f.final >= ?
@@ -40,8 +41,8 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
     // Devolver las fechas exactamente como están en la base de datos (UTC)
     const fechasFormateadas = fechas.rows.map((fecha) => ({
       ...fecha,
-      inicio: fecha.inicio, // Mantener UTC
-      final: fecha.final,   // Mantener UTC
+      inicio: fecha.inicio,
+      final: fecha.final,
       titulo: fecha.titulo,
       tipo: fecha.tipo,
       join_link: fecha.join_link,
@@ -58,9 +59,7 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
 router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   const { sessions = [] } = req.body;
   const { selectedCourseId } = req.params;
-  const todayUTC = DateTime.now().setZone('UTC').startOf('day');
 
-  // Verificación de token
   const token = req.headers.authorization?.split(" ")[1];
   let userPayload;
   try {
@@ -81,39 +80,54 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
 
     const results = [];
     for (const s of sessions) {
-      const { date, start_time, end_time, titulo = "Clase", type = "Clase en vivo" } = s;
-      
-      if (!date || !start_time || !end_time) {
-        console.error("Campos faltantes:", { date, start_time, end_time });
+      const { inicio, final, titulo = "Clase", type = "Clase en vivo", timezone = "America/Bogota" } = s;
+
+      if (!inicio || !final) {
+        console.error("Campos faltantes:", { inicio, final });
         continue;
       }
 
-      if (!/^\d{2}:\d{2}$/.test(start_time) || !/^\d{2}:\d{2}$/.test(end_time)) {
-        console.error("Formato de hora inválido:", { start_time, end_time });
+      // Convertir a UTC manteniendo el instante temporal correcto
+      const startUTC = DateTime.fromISO(inicio, { zone: timezone }).toUTC();
+      const endUTC = DateTime.fromISO(final, { zone: timezone }).toUTC();
+
+      if (!startUTC.isValid || !endUTC.isValid) {
+        console.error("Fechas inválidas:", { inicio, final });
         continue;
       }
-
-      const dateUTC = DateTime.fromISO(date, { zone: 'utc' }).startOf('day');
-      const startUTC = DateTime.fromISO(`${date}T${start_time}`, { zone: 'utc' });
-      const endUTC = DateTime.fromISO(`${date}T${end_time}`, { zone: 'utc' });
-
 
       if (endUTC <= startUTC) {
-        console.error(`Hora final debe ser mayor a hora inicial (${start_time} - ${end_time})`);
+        console.error(`Hora final debe ser mayor a hora inicial (${inicio} - ${final})`);
         continue;
       }
 
-      // Generar link de videochat
+      // Usar fecha LOCAL como clave única
+      const localDate = DateTime.fromISO(inicio, { zone: timezone }).toISODate();
+
+      // Verificar si ya existe una sala para esta fecha en el curso
+      const existingRoom = await db.execute(
+        `SELECT room_id, link_mot FROM fechas 
+         WHERE idCurso = ? AND fecha_date = ?`,
+        [selectedCourseId, localDate]
+      );
+
+      let room_id = null;
       let link_mot = null;
+      
+      if (existingRoom.rows.length > 0 && existingRoom.rows[0].room_id) {
+        room_id = existingRoom.rows[0].room_id;
+        link_mot = existingRoom.rows[0].link_mot;
+      }
+
       if (type === "Clase en vivo") {
         try {
-          const VIDEOCHAT_URL = process.env.VIDEOCHAT_API || "http://localhost:3001";
+          const { VIDEOCHAT_URL } = process.env;
           const payload = {
             course_id: selectedCourseId,
-            session_date: date,
-            start_time,
-            end_time,
-            user_id: userPayload.id
+            start_utc: startUTC.toISO(),
+            end_utc: endUTC.toISO(),
+            session_date: localDate,
+            room_id: room_id
           };
 
           const { data } = await axios.post(
@@ -121,7 +135,9 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
             payload,
             { headers: { Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}` } }
           );
+          
           link_mot = data.link;
+          room_id = data.room_id;
         } catch (err) {
           console.error("Error al generar sala:", err.message);
         }
@@ -130,27 +146,30 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
       try {
         await db.execute(
           `INSERT INTO fechas (
-            inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date, room_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
             inicio = excluded.inicio,
             final = excluded.final,
             titulo = excluded.titulo,
-            link_mot = COALESCE(excluded.link_mot, fechas.link_mot)`,
+            tipo_encuentro = excluded.tipo_encuentro,
+            link_mot = COALESCE(excluded.link_mot, fechas.link_mot),
+            room_id = COALESCE(excluded.room_id, fechas.room_id)`,
           [
-            startUTC.toISO(), 
-            endUTC.toISO(), 
-            type, 
-            selectedCourseId, 
-            titulo, 
-            link_mot, 
-            date
+            startUTC.toISO(),
+            endUTC.toISO(),
+            type,
+            selectedCourseId,
+            titulo,
+            link_mot,
+            localDate,
+            room_id
           ]
         );
-        results.push({ date, status: "success" });
+        results.push({ date: localDate, status: "success" });
       } catch (dbError) {
         console.error("Error en DB:", dbError.message);
-        results.push({ date, status: "failed" });
+        results.push({ date: localDate, status: "failed" });
       }
     }
 

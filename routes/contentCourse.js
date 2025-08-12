@@ -34,14 +34,13 @@ router.post("/api/upload-recording", upload.single("recording"), async (req, res
   try {
     if (!req.file) throw new Error("Archivo no recibido");
 
-    const { adminUserName, selectedModuleId } = req.body;
-    if (!adminUserName) throw new Error("Faltan datos obligatorios");
+    const { adminUserName, selectedModuleId, roomId } = req.body;
+    if (!adminUserName || !roomId) throw new Error("Faltan datos obligatorios");
 
     const { auth, folderId } = await getAdminDriveClient(adminUserName);
     const drive = google.drive({ version: "v3", auth });
 
     const now = DateTime.utc();
-    const fechaLocal = now.setZone("America/Bogota").toISODate();
 
     const { data } = await drive.files.create({
       requestBody: {
@@ -60,12 +59,11 @@ router.post("/api/upload-recording", upload.single("recording"), async (req, res
       `SELECT f.id FROM fechas f
        JOIN cursos c ON f.idCurso = c.id
        JOIN usuarios u ON c.admin = u.id
-       WHERE u.nombre = ? AND f.fecha_date = ?`,
-      [adminUserName, fechaLocal]
+       WHERE u.nombre = ? AND f.room_id = ?`,
+      [adminUserName, roomId]
     );
     const fechaId = result.rows[0]?.id;
-
-    if (!fechaId) throw new Error("No se encontró la sesión para la fecha actual");
+    if (!fechaId) throw new Error("No se encontró la sesión para esta sala");
 
     await db.execute(
       `INSERT INTO grabaciones (idFecha, titulo, link, id_modulo)
@@ -78,7 +76,7 @@ router.post("/api/upload-recording", upload.single("recording"), async (req, res
       ]
     );
 
-    fs.unlink(req.file.path, () => {});
+    fs.unlink(req.file.path, () => { });
     res.json({
       success: true,
       fileId: data.id,
@@ -201,7 +199,7 @@ router.post("/upload-module-content/:moduleId", upload.single("file"), async (re
       [moduleId, title, data.webViewLink]
     );
 
-    fs.unlink(req.file.path, () => {});
+    fs.unlink(req.file.path, () => { });
     res.json({
       success: true,
       fileLink: data.webViewLink,

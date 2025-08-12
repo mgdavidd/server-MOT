@@ -56,7 +56,7 @@ router.post("/create-course", async (req, res) => {
     await db.execute(
       `INSERT INTO cursos (nombre, fecha, precio, descripcion, admin, tipoCurso, genero, portada)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [nombre,fechaActual, costo || null, descripcion || null, admin, tipoCurso, area, imagen]
+      [nombre, fechaActual, costo || null, descripcion || null, admin, tipoCurso, area, imagen]
     );
 
     return res.status(201).json({ success: true, message: "Curso creado exitosamente" });
@@ -66,5 +66,18 @@ router.post("/create-course", async (req, res) => {
     return res.status(500).json({ error: "Error del servidor" });
   }
 });
+
+router.get("/courses/student/:userId", async (req, res) => {
+  try {
+    const listCourses = await db.execute(
+      "SELECT c.id, c.nombre, c.descripcion, c.tipoCurso FROM cursos c JOIN cursos_estudiante ce ON ce.idCurso = c.id WHERE ce.idUsuario = ?",
+      [req.params.userId]
+    )
+
+    res.json(listCourses.rows)
+  } catch (error) {
+    console.log(error)
+  }
+})
 
 module.exports = router;

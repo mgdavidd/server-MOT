@@ -10,7 +10,7 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-// const io = socketIo(server);
+const io = socketIo(server);
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -30,14 +30,12 @@ app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ extended: true, limit: "500mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-// Rutas
+
 const routes = require("./routes");
 app.use(routes);
 
-// WebSocket
-// require("./routes/socket")(io);
+require("./routes/socket")(io);
 
-// 
 const { uploadDir } = require("./uploadConfig");
 const fs = require("fs");
 
