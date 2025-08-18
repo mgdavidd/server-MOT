@@ -10,7 +10,6 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -34,7 +33,8 @@ app.use(express.static(path.join(__dirname, "public")));
 const routes = require("./routes");
 app.use(routes);
 
-require("./routes/socket")(io);
+const setupSocket = require("./routes/socket");
+const io = setupSocket(server);
 
 const { uploadDir } = require("./uploadConfig");
 const fs = require("fs");

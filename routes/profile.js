@@ -23,4 +23,17 @@ router.put("/edit-profile/:id", async (req, res) => {
   }
 });
 
+router.get("/users/:userId", async (req, res) => {
+  try {
+    const result = await db.execute(
+      `SELECT id, nombre, fotoPerfil FROM usuarios WHERE id = ?`,
+      [req.params.userId]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error al obtener usuario");
+  }
+});
+
 module.exports = router;

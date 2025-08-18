@@ -113,7 +113,7 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
 
       let room_id = null;
       let link_mot = null;
-      
+
       if (existingRoom.rows.length > 0 && existingRoom.rows[0].room_id) {
         room_id = existingRoom.rows[0].room_id;
         link_mot = existingRoom.rows[0].link_mot;
@@ -135,7 +135,7 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
             payload,
             { headers: { Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}` } }
           );
-          
+
           link_mot = data.link;
           room_id = data.room_id;
         } catch (err) {
