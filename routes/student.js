@@ -11,13 +11,9 @@ router.get("/my-students/:courseId", async (req, res) => {
             u.nombre,
             u.nombre_usuario,
             u.fotoPerfil,
-            u.color_perfil,
-            ROUND(SUM(n.valor_nota * (n.porcentaje / 100)), 2) AS promedio
+            u.color_perfil
         FROM usuarios u
         JOIN cursos_estudiante ce ON u.id = ce.idUsuario
-        LEFT JOIN notas n 
-            ON n.id_est = u.id 
-            AND n.id_curso = ce.idCurso
         WHERE ce.idCurso = ?
         GROUP BY u.id, u.nombre, u.nombre_usuario, u.fotoPerfil, u.color_perfil`,
         [req.params.courseId]

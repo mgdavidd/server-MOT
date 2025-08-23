@@ -68,7 +68,7 @@ function formatCourses(rows) {
 router.get("/courses/student/:userId", async (req, res) => {
   try {
     const listCourses = await db.execute(
-      "SELECT c.id, c.nombre, c.tipoCurso, c.portada FROM cursos c JOIN cursos_estudiante ce ON ce.idCurso = c.id WHERE ce.idUsuario = ?",
+      "SELECT c.id, c.nombre, c.tipoCurso, c.portada, c.admin FROM cursos c JOIN cursos_estudiante ce ON ce.idCurso = c.id WHERE ce.idUsuario = ?",
       [req.params.userId]
     )
 

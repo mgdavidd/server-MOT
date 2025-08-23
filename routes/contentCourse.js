@@ -118,9 +118,10 @@ router.post("/update-recording", async (req, res) => {
 
 router.get("/modules/course/:courseId", async (req, res) => {
   const { courseId } = req.params;
+  const { authorization } = req.headers
   try {
     const modules = await db.execute(
-      "SELECT * FROM modulos WHERE id_curso = ? ORDER BY id ASC",
+      "SELECT * FROM modulos WHERE id_curso = ? ORDER BY orden ASC",
       [courseId]
     );
     if (modules.rows.length === 0) {
@@ -138,9 +139,15 @@ router.post("/modules/course/:courseId", async (req, res) => {
   const { title, color } = req.body;
 
   try {
+    const getMaxOrden = await db.execute(
+      "SELECT MAX(orden) as maxOrden FROM modulos WHERE id_curso = ?",
+      [courseId]
+    );
+    const nuevoOrden = (getMaxOrden.rows[0]?.maxOrden || 0) + 1;
+
     await db.execute(
-      "INSERT INTO modulos (id_curso, nombre, color) VALUES (?, ?, ?)",
-      [courseId, title, color]
+      "INSERT INTO modulos (id_curso, nombre, color, orden) VALUES (?, ?, ?, ?)",
+      [courseId, title, color, nuevoOrden]
     );
     res.json({
       success: true,
@@ -230,9 +237,48 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
     }
 
     const result = await db.execute(
-      "SELECT * FROM modulos WHERE id_curso = ? ORDER BY id",
+      "SELECT * FROM modulos WHERE id_curso = ? ORDER BY orden ASC",
       [courseId]
     );
+    const userInfo = await db.execute(
+      "SELECT rol FROM usuarios WHERE id = ?",
+      [userId]
+    );
+
+    if (userInfo.rows[0].rol === "estudiante") {
+      const progresoActual = await db.execute(
+        "SELECT * FROM progreso_modulo WHERE id_curso = ? AND id_usuario = ?",
+        [courseId, userId]
+      );
+      
+      const progreso = progresoActual.rows[0];
+      const modulos = result.rows;
+      
+      // Determinar qué módulos están desbloqueados
+      let idModuloActual = null;
+      if (progreso) {
+        idModuloActual = progreso.id_modulo_actual;
+      } else {
+        // Si no hay progreso, el primer módulo es el actual
+        const primerModulo = modulos.find(m => m.orden === 1);
+        idModuloActual = primerModulo ? primerModulo.id : null;
+      }
+      
+      // Encontrar el orden del módulo actual
+      const moduloActual = modulos.find(m => m.id === idModuloActual);
+      const ordenModuloActual = moduloActual ? moduloActual.orden : 0;
+      
+      // Marcar módulos como bloqueados o desbloqueados
+      const modulosConEstado = modulos.map(modulo => ({
+        ...modulo,
+        desbloqueado: modulo.orden <= ordenModuloActual
+      }));
+      
+      return res.json({
+        result: modulosConEstado,
+        progresoActual: progreso || { id_modulo_actual: idModuloActual }
+      });
+    }
 
     return res.json(result.rows);
   } catch (error) {
@@ -258,6 +304,39 @@ router.get("/modules/recordings/:moduleId", async (req, res) => {
   }
 });
 
+router.get("/modules/content/:moduleId", async (req, res) => {
+  const { moduleId } = req.params;
+  try {
+    const result = await db.execute(
+      "SELECT * FROM contenido WHERE id_modulo = ? ORDER BY id ASC",
+      [moduleId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error obteniendo contenido del módulo:", error);
+    res.status(500).json({ error: "Error al obtener contenido del módulo" });
+  }
+});
 
+// POST /modules/:moduleId/content
+router.post("/modules/:moduleId/content", async (req, res) => {
+  const { moduleId } = req.params;
+  const { titulo, link } = req.body;
+
+  if (!titulo || !link) {
+    return res.status(400).json({ error: "Faltan datos obligatorios" });
+  }
+
+  try {
+    await db.execute(
+      "INSERT INTO contenido (id_modulo, titulo, link) VALUES (?, ?, ?)",
+      [moduleId, titulo, link]
+    );
+    res.json({ success: true, message: "Contenido creado correctamente" });
+  } catch (error) {
+    console.error("Error creando contenido:", error);
+    res.status(500).json({ error: "Error al crear contenido" });
+  }
+});
 
 module.exports = router;

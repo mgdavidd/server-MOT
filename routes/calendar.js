@@ -119,7 +119,6 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
         link_mot = existingRoom.rows[0].link_mot;
       }
 
-      if (type === "Clase en vivo") {
         try {
           const { VIDEOCHAT_URL } = process.env;
           const payload = {
@@ -141,7 +140,6 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
         } catch (err) {
           console.error("Error al generar sala:", err.message);
         }
-      }
 
       try {
         await db.execute(
