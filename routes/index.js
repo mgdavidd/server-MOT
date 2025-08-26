@@ -9,6 +9,7 @@ router.use("/", require("./contentCourse"));
 router.use("/", require("./videoLinks"));
 router.use("/", require("./student"));
 router.use("/", require("./quizzes"));
+router.use("/", require("./foros"));
 
 module.exports = router;
 

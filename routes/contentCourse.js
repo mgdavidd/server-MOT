@@ -339,4 +339,55 @@ router.post("/modules/:moduleId/content", async (req, res) => {
   }
 });
 
+// Subida de grabaciones pregrabadas (sin fecha)
+router.post("/upload-pre-recording/:moduleId", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) throw new Error("Archivo no recibido");
+
+    const { adminUserName, title } = req.body;
+    const { moduleId } = req.params;
+
+    if (!adminUserName || !title) {
+      throw new Error("Faltan datos obligatorios");
+    }
+
+    const { auth, folderId } = await getAdminDriveClient(adminUserName);
+    const drive = google.drive({ version: "v3", auth });
+
+    const fileName = `PreGrabado-${Date.now()}-${req.file.originalname}`;
+
+    const { data } = await drive.files.create({
+      requestBody: {
+        name: fileName,
+        mimeType: req.file.mimetype,
+        parents: [folderId],
+      },
+      media: {
+        mimeType: req.file.mimetype,
+        body: fs.createReadStream(req.file.path),
+      },
+      fields: "id,webViewLink",
+    });
+
+    // Guardar en la tabla grabaciones con idFecha = NULL
+    await db.execute(
+      "INSERT INTO grabaciones (idFecha, titulo, link, id_modulo) VALUES (?, ?, ?, ?)",
+      [null, title, data.webViewLink, moduleId]
+    );
+
+    fs.unlink(req.file.path, () => { });
+    res.json({
+      success: true,
+      fileLink: data.webViewLink,
+    });
+  } catch (error) {
+    console.error("Error subiendo grabación pregrabada:", error);
+    res.status(500).json({
+      error: "Error al subir grabación pregrabada",
+      details: error.message,
+    });
+  }
+});
+
+
 module.exports = router;
