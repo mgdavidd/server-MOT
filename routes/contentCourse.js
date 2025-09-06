@@ -7,6 +7,8 @@ const { upload, uploadDir } = require("../uploadConfig");
 const { DateTime } = require("luxon");
 const { getAdminDriveClient } = require("../driveUtils");
 const { google } = require("googleapis");
+const jwt = require("jsonwebtoken")
+const JWT_SECRET = process.env.JWT_SECRET || 'clave_super_segura';
 
 router.get("/my-recordings/:userId/:courseId", async (req, res) => {
   try {
@@ -56,13 +58,14 @@ router.post("/api/upload-recording", upload.single("recording"), async (req, res
     });
 
     const result = await db.execute(
-      `SELECT f.id FROM fechas f
+      `SELECT f.id, f.titulo FROM fechas f
        JOIN cursos c ON f.idCurso = c.id
        JOIN usuarios u ON c.admin = u.id
        WHERE u.nombre = ? AND f.room_id = ?`,
       [adminUserName, roomId]
     );
     const fechaId = result.rows[0]?.id;
+    const fechaTitulo = result.rows[0]?.titulo
     if (!fechaId) throw new Error("No se encontró la sesión para esta sala");
 
     await db.execute(
@@ -70,7 +73,7 @@ router.post("/api/upload-recording", upload.single("recording"), async (req, res
        VALUES (?, ?, ?, ?)`,
       [
         fechaId,
-        `Grabación ${now.toFormat("yyyyLLdd-HHmmss")}`,
+        `Grabacion - ${fechaTitulo}`,
         data.webViewLink,
         selectedModuleId
       ]
@@ -250,10 +253,10 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
         "SELECT * FROM progreso_modulo WHERE id_curso = ? AND id_usuario = ?",
         [courseId, userId]
       );
-      
+
       const progreso = progresoActual.rows[0];
       const modulos = result.rows;
-      
+
       // Determinar qué módulos están desbloqueados
       let idModuloActual = null;
       if (progreso) {
@@ -263,17 +266,17 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
         const primerModulo = modulos.find(m => m.orden === 1);
         idModuloActual = primerModulo ? primerModulo.id : null;
       }
-      
+
       // Encontrar el orden del módulo actual
       const moduloActual = modulos.find(m => m.id === idModuloActual);
       const ordenModuloActual = moduloActual ? moduloActual.orden : 0;
-      
+
       // Marcar módulos como bloqueados o desbloqueados
       const modulosConEstado = modulos.map(modulo => ({
         ...modulo,
         desbloqueado: modulo.orden <= ordenModuloActual
       }));
-      
+
       return res.json({
         result: modulosConEstado,
         progresoActual: progreso || { id_modulo_actual: idModuloActual }
@@ -318,7 +321,6 @@ router.get("/modules/content/:moduleId", async (req, res) => {
   }
 });
 
-// POST /modules/:moduleId/content
 router.post("/modules/:moduleId/content", async (req, res) => {
   const { moduleId } = req.params;
   const { titulo, link } = req.body;
@@ -385,6 +387,117 @@ router.post("/upload-pre-recording/:moduleId", upload.single("file"), async (req
     res.status(500).json({
       error: "Error al subir grabación pregrabada",
       details: error.message,
+    });
+  }
+});
+
+//actualizar y eliminar los elementos
+router.put("/content/:contentId", async (req, res) => {
+  const { contentId } = req.params
+  const { title } = req.body;
+  const { authorization } = req.headers
+  if (!title ) {
+    return res.status(400).json({ error: "Faltan datos obligatorios" });
+  }
+
+  if (authorization) {
+    const token = authorization.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (decoded.id !== moduleData.admin) {
+      return res.status(403).json({ error: "No tienes permiso para eliminar este módulo" });
+    }
+  }
+
+  try {
+    await db.execute(
+      "UPDATE contenido SET titulo = ? WHERE id = ?",
+      [title, contentId]
+    )
+    res.json({ success: true, message: "Contenido actualizado correctamente" });
+  } catch (error) {
+    console.error("Error actualizando contenido:", error);
+    res.status(500).json({ error: "Error al actualizar contenido" });
+  }
+})
+
+router.delete("/content/:contentId", async (req, res) => {
+  const { contentId } = req.params;
+  const { link } = req.body;
+  const { authorization } = req.headers;
+  let decoded;
+
+  if (authorization) {
+    const token = authorization.split(" ")[1];
+    decoded = jwt.verify(token, JWT_SECRET);
+
+    if (decoded.id !== moduleData.admin) {
+      return res.status(403).json({ error: "No tienes permiso para eliminar este contenido" });
+    }
+  }
+
+  try {
+    await db.execute("DELETE FROM contenido WHERE id = ?", [contentId]);
+    res.json({ success: true, message: "Contenido eliminado correctamente" });
+    //eliminar de drive
+    const { auth } = await getAdminDriveClient(decoded.nombre);
+    const drive = google.drive({ version: "v3", auth });
+    //eliminar archivo teniendo el link
+    const fileId = link.split("/d/")[1].split("/")[0]; //obtenemos el id del archivo por medio de regex en el link
+    await drive.files.delete({ fileId });
+  } catch (error) {
+    console.error("Error eliminando contenido:", error);
+    res.status(500).json({ error: "Error al eliminar contenido" });
+  }
+});
+
+router.delete("/modules/:moduleId", async (req, res) => {
+  const { moduleId } = req.params;
+  const authHeader = req.headers.authorization;
+
+
+  try {
+    const moduleInfo = await db.execute(
+      `SELECT c.id as course_id, c.admin, u.id as user_id 
+       FROM modulos m
+       JOIN cursos c ON m.id_curso = c.id
+       JOIN usuarios u ON c.admin = u.id
+       WHERE m.id = ?`,
+      [moduleId]
+    );
+
+    if (moduleInfo.rows.length === 0) {
+      return res.status(404).json({ error: "Módulo no encontrado" });
+    }
+
+    const moduleData = moduleInfo.rows[0];
+
+    if (authHeader) {
+      const token = authHeader.split(" ")[1];
+      const decoded = jwt.verify(token, JWT_SECRET);
+
+      if (decoded.id !== moduleData.admin) {
+        return res.status(403).json({ error: "No tienes permiso para eliminar este módulo" });
+      }
+    }
+
+    await db.execute("DELETE FROM modulos WHERE id = ?", [moduleId]);
+
+    res.json({
+      success: true,
+      message: "Módulo eliminado exitosamente"
+    });
+
+  } catch (error) {
+    console.error("Error eliminando módulo:", error);
+
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+
+    res.status(500).json({
+      error: "Error al eliminar módulo",
+      details: error.message
     });
   }
 });

@@ -91,7 +91,7 @@ router.post("/signup", async (req, res) => {
 });
 
 router.post("/choose-username", async (req, res) => {
-  const { userName, password, email, google_token } = req.body;
+  const { userName, password, email, google_token, areaInteres } = req.body;
 
   if (!userName || !password || !email || !google_token) {
     return res.status(400).json({ error: "Faltan datos obligatorios" });
@@ -106,8 +106,8 @@ router.post("/choose-username", async (req, res) => {
     }
 
     await db.execute(
-      "INSERT INTO usuarios (nombre, contrasena, email, rol, google_token) VALUES (?, ?, ?, 'estudiante', ?)",
-      [userName, password, email, JSON.stringify(google_token)]
+      "INSERT INTO usuarios (nombre, contrasena, email, rol, google_token, area) VALUES (?, ?, ?, 'estudiante', ?, ?)",
+      [userName, password, email, JSON.stringify(google_token), areaInteres]
     );
 
     const result = await db.execute("SELECT * FROM usuarios WHERE nombre = ?", [

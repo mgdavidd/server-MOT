@@ -2,6 +2,8 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 const { DateTime } = require("luxon");
+const jwt = require("jsonwebtoken");
+const JWT_SECRET = process.env.JWT_SECRET || "clave_super_segura";
 
 const validateCourseInput = (nombre, admin, tipoCurso, area, imagen) => {
   if (!nombre || !admin || !tipoCurso || !area || !imagen) {
@@ -136,6 +138,55 @@ router.get("/courses/:courseId/messages", async (req, res) => {
     console.error(err);
     res.status(500).send("Error al obtener mensajes del curso");
   }
+});
+
+router.delete("/del/courses/:courseId", async (req, res) => {
+  const { courseId } = req.params;
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const userId = decoded.id;
+
+    const curso = await db.execute("SELECT * FROM cursos WHERE id = ? AND admin = ?", [courseId, userId]);
+    if (curso.rows.length === 0) {
+      return res.status(403).json({ error: "No tienes permiso para eliminar este curso" });
+    }
+
+    await db.execute("DELETE FROM cursos WHERE id = ?", [courseId]);
+    res.json({ success: true, message: "Curso eliminado exitosamente" });
+  } catch (error) {
+    console.error("Error al eliminar curso:", error);
+    res.status(500).json({ error: "Error del servidor" });
+  }
+});
+
+router.post("/inscription/course", async (req, res) => {
+  const { userId, courseId } = req.body;
+  console.log(req.body)
+
+  if (!userId || !courseId) {
+    return res.status(400).json({ error: "Faltan datos requeridos" });
+  }
+  const existingEnrollment = await db.execute("SELECT 1 FROM cursos_estudiante WHERE idUsuario = ? AND idCurso = ?", [userId, courseId]);
+
+  if (existingEnrollment.rows.length > 0) {
+    return res.status(409).json({ error: "Ya estás inscrito en este curso" });
+  }
+
+  await db.execute("INSERT INTO cursos_estudiante (idUsuario, idCurso) VALUES (?, ?)", [userId, courseId])
+    .then(() => {
+      res.status(200).json({ success: true, message: "Inscripción exitosa" });
+    })
+    .catch((error) => {
+      console.error("Error al inscribir al curso:", error);
+      res.status(500).json({ error: "Error del servidor" });
+    });
 });
 
 module.exports = router;
