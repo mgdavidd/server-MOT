@@ -451,6 +451,32 @@ router.delete("/content/:contentId", async (req, res) => {
   }
 });
 
+router.delete("/recordings/:recordingId", async (req, res) => {
+  const { recordingId } = req.params;
+  const { link } = req.body;
+  const { authorization } = req.headers;
+  let decoded;
+
+  if (authorization) {
+    const token = authorization.split(" ")[1];
+    decoded = jwt.verify(token, JWT_SECRET);
+  }
+
+  try {
+    await db.execute("DELETE FROM grabaciones WHERE id = ?", [recordingId]);
+    res.json({ success: true, message: "Grabación eliminada correctamente" });
+
+    const { auth } = await getAdminDriveClient(decoded.nombre);
+    const drive = google.drive({ version: "v3", auth });
+    //eliminar archivo teniendo el link
+    const fileId = link.split("/d/")[1].split("/")[0]; //obtenemos el id del archivo por medio de regex en el link
+    await drive.files.delete({ fileId });
+  } catch (error) {
+    console.error("Error eliminando grabación:", error);
+    res.status(500).json({ error: "Error al eliminar grabación" });
+  }
+});
+
 router.delete("/modules/:moduleId", async (req, res) => {
   const { moduleId } = req.params;
   const authHeader = req.headers.authorization;
