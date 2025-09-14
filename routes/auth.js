@@ -22,13 +22,25 @@ router.post("/login", async (req, res) => {
     );
 
     if (result.rows.length > 0) {
-      const user = result.rows[0];
+      const dbUser = result.rows[0];
+
+      const user = {
+        id: dbUser.id,
+        nombre: dbUser.nombre,
+        nombre_usuario: dbUser.nombre_usuario,
+        email: dbUser.email,
+        rol: dbUser.rol,
+        color_perfil: dbUser.color_perfil,
+        area: dbUser.area,
+        // no incluimos fotoPerfil aquí
+      };
+
       const token = jwt.sign(
         {
           id: user.id,
           email: user.email,
           nombre: user.nombre,
-          role: user.rol,
+          rol: user.rol,
         },
         JWT_SECRET,
         { expiresIn: "7d" }
@@ -42,6 +54,7 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Error interno del servidor" });
   }
 });
+
 
 router.post("/signup", async (req, res) => {
   const { userName, email, password, isAdmin } = req.body;
@@ -161,11 +174,24 @@ router.get("/auth/google/callback", async (req, res) => {
       );
 
       const user = userResult.rows[0];
-      // 👉 Enviamos el usuario en la URL (en URI encoded JSON)
+
+      // 🔹 Generar el mismo JWT que usas en /login
+      const jwtToken = jwt.sign(
+        {
+          id: user.id,
+          email: user.email,
+          nombre: user.nombre,
+          role: user.rol,
+        },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+
+      // 🔹 Redirigir enviando user + token
       return res.redirect(
         `http://localhost:5173/oauth-success?user=${encodeURIComponent(
           JSON.stringify(user)
-        )}`
+        )}&token=${encodeURIComponent(jwtToken)}`
       );
     }
 

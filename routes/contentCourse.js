@@ -10,28 +10,6 @@ const { google } = require("googleapis");
 const jwt = require("jsonwebtoken")
 const JWT_SECRET = process.env.JWT_SECRET || 'clave_super_segura';
 
-router.get("/my-recordings/:userId/:courseId", async (req, res) => {
-  try {
-    const result = await db.execute(
-      `SELECT g.id, g.idFecha, g.titulo, g.link, f.fecha_date, f.idCurso, f.tipo_encuentro
-       FROM grabaciones g
-       JOIN fechas f ON g.idFecha = f.id 
-       JOIN cursos c ON f.idCurso = c.id
-       JOIN usuarios u ON c.admin = u.id
-       WHERE u.id = ? AND c.id = ?
-       ORDER BY f.inicio DESC`,
-      [req.params.userId, req.params.courseId]
-    );
-    res.json({ recordings: result.rows });
-  } catch (err) {
-    console.error("Error obteniendo grabaciones:", err);
-    res.json({
-      recordings: [],
-      error: "No se pudieron obtener las grabaciones",
-    });
-  }
-});
-
 router.post("/api/upload-recording", upload.single("recording"), async (req, res) => {
   try {
     if (!req.file) throw new Error("Archivo no recibido");
@@ -293,10 +271,28 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
 router.get("/modules/recordings/:moduleId", async (req, res) => {
   const { moduleId } = req.params;
   try {
+    // LEFT JOIN para incluir grabaciones pregrabadas (idFecha = NULL)
     const recordings = await db.execute(
-      "SELECT g.id, g.titulo, g.link, f.inicio FROM grabaciones g JOIN fechas f ON g.idFecha = f.id WHERE g.id_modulo = ? ORDER BY g.id ASC",
+      `SELECT 
+        g.id, 
+        g.titulo, 
+        g.link, 
+        f.inicio,
+        CASE 
+          WHEN g.idFecha IS NULL THEN 'pregrabado'
+          ELSE 'sesion'
+        END as tipo_grabacion
+       FROM grabaciones g 
+       LEFT JOIN fechas f ON g.idFecha = f.id 
+       WHERE g.id_modulo = ? 
+       ORDER BY 
+         CASE 
+           WHEN f.inicio IS NOT NULL THEN f.inicio 
+           ELSE g.id 
+         END DESC`,
       [moduleId]
     );
+    
     res.json(recordings.rows);
   } catch (error) {
     console.error("Error obteniendo grabaciones:", error);
@@ -421,33 +417,69 @@ router.put("/content/:contentId", async (req, res) => {
   }
 })
 
+// Rutas de eliminación corregidas para contentCourse.js
+
 router.delete("/content/:contentId", async (req, res) => {
   const { contentId } = req.params;
   const { link } = req.body;
   const { authorization } = req.headers;
-  let decoded;
-
-  if (authorization) {
-    const token = authorization.split(" ")[1];
-    decoded = jwt.verify(token, JWT_SECRET);
-
-    if (decoded.id !== moduleData.admin) {
-      return res.status(403).json({ error: "No tienes permiso para eliminar este contenido" });
-    }
-  }
-
+  
   try {
-    await db.execute("DELETE FROM contenido WHERE id = ?", [contentId]);
-    res.json({ success: true, message: "Contenido eliminado correctamente" });
-    //eliminar de drive
-    const { auth } = await getAdminDriveClient(decoded.nombre);
-    const drive = google.drive({ version: "v3", auth });
-    //eliminar archivo teniendo el link
-    const fileId = link.split("/d/")[1].split("/")[0]; //obtenemos el id del archivo por medio de regex en el link
-    await drive.files.delete({ fileId });
+    // Primero verificar permisos
+    if (authorization) {
+      const token = authorization.split(" ")[1];
+      const decoded = jwt.verify(token, JWT_SECRET);
+
+      // Obtener información del contenido y verificar permisos
+      const contentInfo = await db.execute(
+        `SELECT c.id as course_id, c.admin, u.nombre as admin_nombre
+         FROM contenido co
+         JOIN modulos m ON co.id_modulo = m.id
+         JOIN cursos c ON m.id_curso = c.id
+         JOIN usuarios u ON c.admin = u.id
+         WHERE co.id = ?`,
+        [contentId]
+      );
+
+      if (contentInfo.rows.length === 0) {
+        return res.status(404).json({ error: "Contenido no encontrado" });
+      }
+
+      const contentData = contentInfo.rows[0];
+
+      if (decoded.id !== contentData.admin) {
+        return res.status(403).json({ error: "No tienes permiso para eliminar este contenido" });
+      }
+
+      // Eliminar de la base de datos
+      await db.execute("DELETE FROM contenido WHERE id = ?", [contentId]);
+      
+      // Eliminar de Drive si hay link
+      if (link && link.includes("/d/")) {
+        try {
+          const { auth } = await getAdminDriveClient(contentData.admin_nombre);
+          const drive = google.drive({ version: "v3", auth });
+          const fileId = link.split("/d/")[1].split("/")[0];
+          await drive.files.delete({ fileId });
+        } catch (driveError) {
+          console.error("Error eliminando archivo de Drive:", driveError);
+          // No fallar si el archivo ya no existe en Drive
+        }
+      }
+
+      return res.json({ success: true, message: "Contenido eliminado correctamente" });
+    } else {
+      return res.status(401).json({ error: "Token de autorización requerido" });
+    }
+
   } catch (error) {
     console.error("Error eliminando contenido:", error);
-    res.status(500).json({ error: "Error al eliminar contenido" });
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+
+    return res.status(500).json({ error: "Error al eliminar contenido" });
   }
 });
 
@@ -455,25 +487,63 @@ router.delete("/recordings/:recordingId", async (req, res) => {
   const { recordingId } = req.params;
   const { link } = req.body;
   const { authorization } = req.headers;
-  let decoded;
-
-  if (authorization) {
-    const token = authorization.split(" ")[1];
-    decoded = jwt.verify(token, JWT_SECRET);
-  }
 
   try {
-    await db.execute("DELETE FROM grabaciones WHERE id = ?", [recordingId]);
-    res.json({ success: true, message: "Grabación eliminada correctamente" });
+    // Primero verificar permisos
+    if (authorization) {
+      const token = authorization.split(" ")[1];
+      const decoded = jwt.verify(token, JWT_SECRET);
 
-    const { auth } = await getAdminDriveClient(decoded.nombre);
-    const drive = google.drive({ version: "v3", auth });
-    //eliminar archivo teniendo el link
-    const fileId = link.split("/d/")[1].split("/")[0]; //obtenemos el id del archivo por medio de regex en el link
-    await drive.files.delete({ fileId });
+      // Obtener información de la grabación y verificar permisos
+      const recordingInfo = await db.execute(
+        `SELECT c.id as course_id, c.admin, u.nombre as admin_nombre
+         FROM grabaciones g
+         JOIN modulos m ON g.id_modulo = m.id
+         JOIN cursos c ON m.id_curso = c.id
+         JOIN usuarios u ON c.admin = u.id
+         WHERE g.id = ?`,
+        [recordingId]
+      );
+
+      if (recordingInfo.rows.length === 0) {
+        return res.status(404).json({ error: "Grabación no encontrada" });
+      }
+
+      const recordingData = recordingInfo.rows[0];
+
+      if (decoded.id !== recordingData.admin) {
+        return res.status(403).json({ error: "No tienes permiso para eliminar esta grabación" });
+      }
+
+      // Eliminar de la base de datos
+      await db.execute("DELETE FROM grabaciones WHERE id = ?", [recordingId]);
+
+      // Eliminar de Drive si hay link
+      if (link && link.includes("/d/")) {
+        try {
+          const { auth } = await getAdminDriveClient(recordingData.admin_nombre);
+          const drive = google.drive({ version: "v3", auth });
+          const fileId = link.split("/d/")[1].split("/")[0];
+          await drive.files.delete({ fileId });
+        } catch (driveError) {
+          console.error("Error eliminando archivo de Drive:", driveError);
+          // No fallar si el archivo ya no existe en Drive
+        }
+      }
+
+      return res.json({ success: true, message: "Grabación eliminada correctamente" });
+    } else {
+      return res.status(401).json({ error: "Token de autorización requerido" });
+    }
+
   } catch (error) {
     console.error("Error eliminando grabación:", error);
-    res.status(500).json({ error: "Error al eliminar grabación" });
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+
+    return res.status(500).json({ error: "Error al eliminar grabación" });
   }
 });
 
