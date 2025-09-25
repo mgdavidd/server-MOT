@@ -23,6 +23,26 @@ app.use(cors({
   credentials: true,
 }));
 
+// Manejar preflight OPTIONS para todas las rutas
+app.options("*", cors({
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      "http://localhost:5173",
+      "https://front-mot.onrender.com",
+      "https://videochat-webrtc.onrender.com"
+    ];
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("No permitido por CORS"));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
+
 
 app.use(cookieParser());
 app.use(express.json({ limit: "500mb" }));
