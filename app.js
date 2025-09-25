@@ -13,7 +13,7 @@ const server = http.createServer(app);
 
 app.use(cors({
   origin: (origin, callback) => {
-    const allowedOrigins = ["http://localhost:5174","http://localhost:5173", "http://localhost:3001"];
+    const allowedOrigins = ["http://localhost:5173","https://front-mot.onrender.com", "https://videochat-webrtc.onrender.com"];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
