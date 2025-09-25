@@ -205,4 +205,5 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   }
 });
 
-export default router;
+
+module.exports = router;
