@@ -4,11 +4,6 @@ const db = require("../db");
 const { DateTime } = require("luxon");
 const jwt = require("jsonwebtoken");
 const JWT_SECRET = process.env.JWT_SECRET || "clave_super_segura";
-const { upload } = require("../uploadConfig");
-const fs = require("fs");
-const path = require("path");
-const { google } = require("googleapis");
-const { getAdminDriveClient } = require("../driveUtils");
 
 const validateCourseInput = (nombre, admin, tipoCurso, area, imagen) => {
   if (!nombre || !admin || !tipoCurso || !area || !imagen) {
@@ -51,33 +46,16 @@ router.post("/create-course", async (req, res) => {
 
     // Crear curso
     const fechaActual = DateTime.utc().toISO();
-    const result = await db.execute(
+    await db.execute(
       `INSERT INTO cursos (nombre, fecha, precio, descripcion, admin, tipoCurso, genero, portada)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [nombre, fechaActual, costo || null, descripcion || null, admin, tipoCurso, area, imagen]
     );
 
-    const newCourseId = result.rows[0].id;
-
-    res.status(201).json({
-      success: true,
-      message: "Curso creado exitosamente",
-      id: newCourseId
-    });
+    res.status(201).json({ success: true, message: "Curso creado exitosamente" });
   } catch (error) {
     console.error("Error al crear el curso:", error);
     res.status(500).json({ error: "Error del servidor" });
-  }
-});
-
-router.delete("/courses/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    await db.execute("DELETE FROM cursos WHERE id = ?", [id]);
-    res.json({ success: true, message: "Curso eliminado" });
-  } catch (error) {
-    console.error("Error eliminando curso:", error);
-    res.status(500).json({ success: false, error: "Error eliminando curso" });
   }
 });
 
@@ -132,73 +110,6 @@ router.get("/filterCourses/:string", async (req, res) => {
     res.status(500).json({ error: "Error al filtrar cursos" });
   }
 });
-
-router.post("/courses/:courseId/video/introduction", upload.single("video"), async (req, res) => {
-  const { courseId } = req.params;
-
-  try {
-    if (!req.file) throw new Error("Archivo de video no recibido");
-
-    // Verificar que el curso exista
-    const curso = await db.execute("SELECT admin FROM cursos WHERE id = ?", [courseId]);
-    if (curso.rows.length === 0) {
-      return res.status(404).json({ error: "Curso no encontrado" });
-    }
-
-    // Verificar si ya tiene video
-    const existing = await db.execute("SELECT 1 FROM video_introduccion WHERE id_curso = ?", [courseId]);
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: "El curso ya tiene un video de introducción" });
-    }
-
-    const adminId = curso.rows[0].admin;
-
-    const { auth, folderId } = await getAdminDriveClient(adminId);
-    const drive = google.drive({ version: "v3", auth });
-
-    const ext = path.extname(req.file.originalname);
-    const fileName = `IntroCurso-${courseId}-${Date.now()}${ext}`;
-    const { data } = await drive.files.create({
-      requestBody: {
-        name: fileName,
-        mimeType: req.file.mimetype,
-        parents: [folderId],
-      },
-      media: {
-        mimeType: req.file.mimetype,
-        body: fs.createReadStream(req.file.path),
-      },
-      fields: "id,webViewLink",
-    });
-
-    await db.execute("INSERT INTO video_introduccion (link, id_curso) VALUES (?, ?)", [
-      data.webViewLink,
-      courseId,
-    ]);
-
-    fs.unlink(req.file.path, () => {});
-    res.json({ success: true, fileLink: data.webViewLink });
-  } catch (error) {
-    console.error("Error subiendo video de introducción:", error);
-    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-    res.status(500).json({ error: "Error al subir el video", details: error.message });
-  }
-});
-
-router.get("/courses/:courseId/video/introduction", async (req, res) => {
-  const { courseId } = req.params;
-  try {
-    const result = await db.execute("SELECT link FROM video_introduccion WHERE id_curso = ?", [courseId]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "No hay video de introducción para este curso" });
-    }
-    res.json({ link: result.rows[0].link });
-  } catch (error) {
-    console.error("Error obteniendo video de introducción:", error);
-    res.status(500).json({ error: "Error al obtener video de introducción" });
-  }
-});
-
 
 router.get("/courses/:courseId", async (req, res) => {
   const cursos = await db.execute(
