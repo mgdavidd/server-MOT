@@ -4,7 +4,7 @@ module.exports = (httpServer) => {
 
   const io = new Server(httpServer, {
     cors: {
-      origin: ["http://localhost:5173", "http://localhost:5174"],
+      origin: ["https://front-mot.onrender.com", "http://localhost:5174"],
       methods: ["GET", "POST"],
       credentials: true,
       transports: ['websocket', 'polling']

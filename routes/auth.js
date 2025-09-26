@@ -189,20 +189,20 @@ router.get("/auth/google/callback", async (req, res) => {
 
       // 🔹 Redirigir enviando user + token
       return res.redirect(
-        `http://localhost:5173/oauth-success?user=${encodeURIComponent(
+        `https://front-mot.onrender.com/oauth-success?user=${encodeURIComponent(
           JSON.stringify(user)
         )}&token=${encodeURIComponent(jwtToken)}`
       );
     }
 
     return res.redirect(
-      `http://localhost:5173/choose-username?email=${encodeURIComponent(
+      `https://front-mot.onrender.com/choose-username?email=${encodeURIComponent(
         userEmail
       )}&google_token=${encodeURIComponent(JSON.stringify(tokens))}`
     );
   } catch (err) {
     console.error("Error en Google Auth:", err);
-    res.redirect("http://localhost:5173?error=auth");
+    res.redirect("https://front-mot.onrender.com?error=auth");
   }
 });
 

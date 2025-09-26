@@ -6,6 +6,14 @@ const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { DateTime } = require("luxon");
 
+// Cache en memoria para evitar peticiones repetidas
+const roomCache = new Map();
+const CACHE_TTL = 60 * 1000; // 1 minuto
+
+// Rate limiting interno
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 100; // 100ms mínimo entre peticiones
+
 router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   const { selectedCourseId } = req.params;
 
@@ -56,6 +64,111 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   }
 });
 
+// Función para hacer peticiones con rate limiting
+async function makeRateLimitedRequest(url, payload, headers) {
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  
+  if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+    await new Promise(resolve => 
+      setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest)
+    );
+  }
+  
+  lastRequestTime = Date.now();
+  return axios.post(url, payload, { headers, timeout: 5000 });
+}
+
+// Función para verificar si necesitamos actualizar las fechas
+function needsTimeUpdate(existingStart, existingEnd, newStartUTC, newEndUTC) {
+  if (!existingStart || !existingEnd) return true;
+  
+  const currentStart = DateTime.fromISO(existingStart, { zone: "utc" });
+  const currentEnd = DateTime.fromISO(existingEnd, { zone: "utc" });
+  
+  // Considerar diferentes si hay más de 1 minuto de diferencia
+  const startDiff = Math.abs(newStartUTC.diff(currentStart, 'minutes').minutes);
+  const endDiff = Math.abs(newEndUTC.diff(currentEnd, 'minutes').minutes);
+  
+  return startDiff > 1 || endDiff > 1;
+}
+
+// Función para obtener o crear/actualizar sala
+async function getOrCreateRoom(selectedCourseId, localDate, startUTC, endUTC, existingRoom) {
+  const cacheKey = `${selectedCourseId}-${localDate}-${startUTC.toISO()}-${endUTC.toISO()}`;
+  
+  // Verificar cache con fechas específicas
+  if (roomCache.has(cacheKey)) {
+    const cached = roomCache.get(cacheKey);
+    if (Date.now() - cached.timestamp < CACHE_TTL) {
+      console.log(`Usando sala desde cache para ${localDate} (${startUTC.toFormat('HH:mm')}-${endUTC.toFormat('HH:mm')})`);
+      return {
+        room_id: cached.room_id,
+        link_mot: cached.link_mot,
+        action: 'cached'
+      };
+    } else {
+      roomCache.delete(cacheKey);
+    }
+  }
+
+  const hasExistingRoom = existingRoom.rows.length > 0 && existingRoom.rows[0].room_id;
+  
+  // SIEMPRE hacer petición para mantener consistencia entre DBs
+  try {
+    const { VIDEOCHAT_URL } = process.env;
+    const payload = {
+      course_id: selectedCourseId,
+      start_utc: startUTC.toISO(),
+      end_utc: endUTC.toISO(),
+      session_date: localDate,
+      room_id: hasExistingRoom ? existingRoom.rows[0].room_id : null
+    };
+
+    const action = hasExistingRoom ? 'actualizada' : 'creada';
+    console.log(`Sala ${action} para ${localDate} (${startUTC.toFormat('HH:mm')}-${endUTC.toFormat('HH:mm')})`);
+    
+    const { data } = await makeRateLimitedRequest(
+      `${VIDEOCHAT_URL}/api/calls`,
+      payload,
+      { Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}` }
+    );
+
+    const roomData = {
+      room_id: data.room_id,
+      link_mot: data.link,
+      action: hasExistingRoom ? 'updated' : 'created'
+    };
+
+    // Guardar en cache con las fechas específicas
+    roomCache.set(cacheKey, {
+      room_id: roomData.room_id,
+      link_mot: roomData.link_mot,
+      timestamp: Date.now()
+    });
+
+    return roomData;
+  } catch (err) {
+    console.error("Error al procesar sala:", err.message);
+    
+    // Si falla y existe sala previa, usar esa como fallback
+    if (hasExistingRoom) {
+      console.log(`Usando sala existente como fallback para ${localDate}`);
+      return {
+        room_id: existingRoom.rows[0].room_id,
+        link_mot: existingRoom.rows[0].link_mot,
+        action: 'fallback'
+      };
+    }
+    
+    return {
+      room_id: null,
+      link_mot: null,
+      action: 'failed'
+    };
+  }
+}
+
 router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   const { sessions = [] } = req.body;
   const { selectedCourseId } = req.params;
@@ -78,104 +191,144 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
       return res.status(403).json({ error: "No autorizado" });
     }
 
+    // Validar sesiones antes de procesarlas
+    const validSessions = sessions.filter(s => {
+      const { inicio, final } = s;
+      if (!inicio || !final) return false;
+      
+      const startUTC = DateTime.fromISO(inicio, { zone: s.timezone || "America/Bogota" }).toUTC();
+      const endUTC = DateTime.fromISO(final, { zone: s.timezone || "America/Bogota" }).toUTC();
+      
+      return startUTC.isValid && endUTC.isValid && endUTC > startUTC;
+    });
+
+    console.log(`Procesando ${validSessions.length} sesiones válidas de ${sessions.length} totales`);
+
+    // Obtener todas las salas existentes de una vez
+    const localDates = validSessions.map(s => 
+      DateTime.fromISO(s.inicio, { zone: s.timezone || "America/Bogota" }).toISODate()
+    );
+    
+    const existingRooms = await db.execute(
+      `SELECT room_id, link_mot, fecha_date FROM fechas 
+       WHERE idCurso = ? AND fecha_date IN (${localDates.map(() => '?').join(',')})`,
+      [selectedCourseId, ...localDates]
+    );
+
+    // Crear mapa de salas existentes
+    const roomMap = new Map();
+    existingRooms.rows.forEach(room => {
+      roomMap.set(room.fecha_date, room);
+    });
+
     const results = [];
-    for (const s of sessions) {
-      const { inicio, final, titulo = "Clase", type = "Clase en vivo", timezone = "America/Bogota" } = s;
+    const batchSize = 3; // Procesar en lotes pequeños
+    
+    for (let i = 0; i < validSessions.length; i += batchSize) {
+      const batch = validSessions.slice(i, i + batchSize);
+      
+      const batchPromises = batch.map(async (s) => {
+        const { inicio, final, titulo = "Clase", type = "Clase en vivo", timezone = "America/Bogota" } = s;
 
-      if (!inicio || !final) {
-        console.error("Campos faltantes:", { inicio, final });
-        continue;
-      }
-
-      // Convertir a UTC manteniendo el instante temporal correcto
-      const startUTC = DateTime.fromISO(inicio, { zone: timezone }).toUTC();
-      const endUTC = DateTime.fromISO(final, { zone: timezone }).toUTC();
-
-      if (!startUTC.isValid || !endUTC.isValid) {
-        console.error("Fechas inválidas:", { inicio, final });
-        continue;
-      }
-
-      if (endUTC <= startUTC) {
-        console.error(`Hora final debe ser mayor a hora inicial (${inicio} - ${final})`);
-        continue;
-      }
-
-      // Usar fecha LOCAL como clave única
-      const localDate = DateTime.fromISO(inicio, { zone: timezone }).toISODate();
-
-      // Verificar si ya existe una sala para esta fecha en el curso
-      const existingRoom = await db.execute(
-        `SELECT room_id, link_mot FROM fechas 
-         WHERE idCurso = ? AND fecha_date = ?`,
-        [selectedCourseId, localDate]
-      );
-
-      let room_id = null;
-      let link_mot = null;
-
-      if (existingRoom.rows.length > 0 && existingRoom.rows[0].room_id) {
-        room_id = existingRoom.rows[0].room_id;
-        link_mot = existingRoom.rows[0].link_mot;
-      }
+        const startUTC = DateTime.fromISO(inicio, { zone: timezone }).toUTC();
+        const endUTC = DateTime.fromISO(final, { zone: timezone }).toUTC();
+        const localDate = DateTime.fromISO(inicio, { zone: timezone }).toISODate();
 
         try {
-          const { VIDEOCHAT_URL } = process.env;
-          const payload = {
-            course_id: selectedCourseId,
-            start_utc: startUTC.toISO(),
-            end_utc: endUTC.toISO(),
-            session_date: localDate,
-            room_id: room_id
-          };
+          // Buscar sala existente
+          const existingRoom = roomMap.get(localDate);
+          const mockExistingResult = { rows: existingRoom ? [existingRoom] : [] };
 
-          const { data } = await axios.post(
-            `${VIDEOCHAT_URL}/api/calls`,
-            payload,
-            { headers: { Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}` } }
+          // Obtener o crear/actualizar sala
+          const { room_id, link_mot, action } = await getOrCreateRoom(
+            selectedCourseId, 
+            localDate, 
+            startUTC, 
+            endUTC, 
+            mockExistingResult
           );
 
-          link_mot = data.link;
-          room_id = data.room_id;
-        } catch (err) {
-          console.error("Error al generar sala:", err.message);
-        }
+          // Insertar/actualizar en DB
+          await db.execute(
+            `INSERT INTO fechas (
+              inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date, room_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
+              inicio = excluded.inicio,
+              final = excluded.final,
+              titulo = excluded.titulo,
+              tipo_encuentro = excluded.tipo_encuentro,
+              link_mot = COALESCE(excluded.link_mot, fechas.link_mot),
+              room_id = COALESCE(excluded.room_id, fechas.room_id)`,
+            [
+              startUTC.toISO(),
+              endUTC.toISO(),
+              type,
+              selectedCourseId,
+              titulo,
+              link_mot,
+              localDate,
+              room_id
+            ]
+          );
 
-      try {
-        await db.execute(
-          `INSERT INTO fechas (
-            inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date, room_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
-            inicio = excluded.inicio,
-            final = excluded.final,
-            titulo = excluded.titulo,
-            tipo_encuentro = excluded.tipo_encuentro,
-            link_mot = COALESCE(excluded.link_mot, fechas.link_mot),
-            room_id = COALESCE(excluded.room_id, fechas.room_id)`,
-          [
-            startUTC.toISO(),
-            endUTC.toISO(),
-            type,
-            selectedCourseId,
-            titulo,
-            link_mot,
-            localDate,
-            room_id
-          ]
-        );
-        results.push({ date: localDate, status: "success" });
-      } catch (dbError) {
-        console.error("Error en DB:", dbError.message);
-        results.push({ date: localDate, status: "failed" });
+          return { 
+            date: localDate, 
+            status: "success", 
+            action: action,
+            room_id: room_id ? room_id.substring(0, 8) + '...' : null // Log truncado
+          };
+        } catch (dbError) {
+          console.error(`Error procesando ${localDate}:`, dbError.message);
+          return { date: localDate, status: "failed" };
+        }
+      });
+
+      // Esperar que termine el lote antes del siguiente
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults);
+      
+      // Pausa entre lotes para evitar saturar
+      if (i + batchSize < validSessions.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
     }
 
-    return res.json({ results });
+    const successCount = results.filter(r => r.status === "success").length;
+    const actionsCount = {
+      created: results.filter(r => r.action === "created").length,
+      updated: results.filter(r => r.action === "updated").length,
+      cached: results.filter(r => r.action === "cached").length,
+      fallback: results.filter(r => r.action === "fallback").length,
+      failed: results.filter(r => r.action === "failed").length
+    };
+    
+    console.log(`Procesamiento completado: ${successCount}/${results.length} exitosos`);
+    console.log(`Acciones: ${actionsCount.created} creadas, ${actionsCount.updated} actualizadas, ${actionsCount.cached} desde cache, ${actionsCount.fallback} fallback, ${actionsCount.failed} fallidas`);
+
+    return res.json({ 
+      results,
+      summary: {
+        total: results.length,
+        successful: successCount,
+        failed: results.length - successCount,
+        actions: actionsCount
+      }
+    });
   } catch (err) {
     console.error("Error crítico:", err);
     return res.status(500).json({ error: "Error al procesar solicitud" });
   }
 });
+
+// Limpiar cache periódicamente
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of roomCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      roomCache.delete(key);
+    }
+  }
+}, CACHE_TTL);
 
 module.exports = router;
