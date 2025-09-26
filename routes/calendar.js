@@ -90,6 +90,7 @@ router.get("/courses/:courseId/join/:roomId", async (req, res) => {
   console.log("📋 [PROXY] Room ID:", roomId);
   
   const token = req.headers.authorization?.split(" ")[1] || req.cookies.token;
+  console.log(req.cookies,"y ", req.headers)
   
   if (!token) {
     console.log("❌ [PROXY] Token no encontrado");
