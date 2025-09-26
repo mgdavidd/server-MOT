@@ -5,11 +5,8 @@ const JWT_SECRET = process.env.JWT_SECRET || "clave_super_segura";
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { DateTime } = require("luxon");
-const VIDEOCHAT_URL = process.env.VIDEOCHAT_URL;
+const VIDEOCHAT_URL = process.env.VIDEOCHAT_URL
 
-// ========================
-// GET fechas de un curso
-// ========================
 router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   const { selectedCourseId } = req.params;
 
@@ -42,6 +39,7 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
       [selectedCourseId, limiteInferior]
     );
 
+    // Devolver las fechas exactamente como están en la base de datos (UTC)
     const fechasFormateadas = fechas.rows.map((fecha) => ({
       ...fecha,
       inicio: fecha.inicio,
@@ -59,9 +57,6 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   }
 });
 
-// ========================
-// POST nuevas fechas
-// ========================
 router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   const { sessions = [] } = req.body;
   const { selectedCourseId } = req.params;
@@ -92,36 +87,47 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
     const results = [];
     const cacheRooms = new Map(); // cache interno para no repetir llamadas
 
-    // Agrupar sesiones por fecha local
-    const sessionsByDate = sessions.reduce((acc, s) => {
-      const timezone = s.timezone || "America/Bogota";
-      const localDate = DateTime.fromISO(s.inicio, { zone: timezone }).toISODate();
-      if (!acc[localDate]) acc[localDate] = [];
-      acc[localDate].push(s);
-      return acc;
-    }, {});
+    for (const s of sessions) {
+      const {
+        inicio,
+        final,
+        titulo = "Clase",
+        type = "Clase en vivo",
+        timezone = "America/Bogota",
+      } = s;
 
-    // Procesar una vez por fecha
-    for (const [localDate, daySessions] of Object.entries(sessionsByDate)) {
-      const first = daySessions[0]; // usamos la primera sesión del día como referencia
-      const { inicio, final, titulo = "Clase", type = "Clase en vivo", timezone = "America/Bogota" } = first;
+      if (!inicio || !final) {
+        console.error("Campos faltantes:", { inicio, final });
+        continue;
+      }
 
+      // Convertir a UTC manteniendo el instante temporal correcto
       const startUTC = DateTime.fromISO(inicio, { zone: timezone }).toUTC();
       const endUTC = DateTime.fromISO(final, { zone: timezone }).toUTC();
 
-      if (!startUTC.isValid || !endUTC.isValid || endUTC <= startUTC) {
-        console.error("Fechas inválidas para:", { inicio, final });
+      if (!startUTC.isValid || !endUTC.isValid) {
+        console.error("Fechas inválidas:", { inicio, final });
         continue;
       }
+
+      if (endUTC <= startUTC) {
+        console.error(
+          `Hora final debe ser mayor a hora inicial (${inicio} - ${final})`
+        );
+        continue;
+      }
+
+      // Usar fecha LOCAL como clave única
+      const localDate = DateTime.fromISO(inicio, { zone: timezone }).toISODate();
 
       let room_id = null;
       let link_mot = null;
 
-      // 1. Revisar cache
+      // 1. Revisar en cache (misma ejecución)
       if (cacheRooms.has(localDate)) {
         ({ room_id, link_mot } = cacheRooms.get(localDate));
       } else {
-        // 2. Revisar DB
+        // 2. Revisar en DB
         const existingRoom = await db.execute(
           `SELECT room_id, link_mot FROM fechas 
            WHERE idCurso = ? AND fecha_date = ?`,
@@ -132,7 +138,7 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
           room_id = existingRoom.rows[0].room_id;
           link_mot = existingRoom.rows[0].link_mot;
         } else {
-          // 3. Llamar al API solo si no existe
+          // 3. Solo si no existe en DB ni cache, pedir nueva sala
           try {
             const payload = {
               course_id: selectedCourseId,
@@ -144,7 +150,11 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
             const { data } = await axios.post(
               `${VIDEOCHAT_URL}/api/calls`,
               payload,
-              { headers: { Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}` } }
+              {
+                headers: {
+                  Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}`,
+                },
+              }
             );
 
             link_mot = data.link;
@@ -154,42 +164,38 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
           }
         }
 
+        // Guardar en cache para próximos usos
         cacheRooms.set(localDate, { room_id, link_mot });
       }
 
-      // Guardar todas las sesiones de ese día en DB con el mismo room_id/link
-      for (const s of daySessions) {
-        const sStartUTC = DateTime.fromISO(s.inicio, { zone: s.timezone || "America/Bogota" }).toUTC();
-        const sEndUTC = DateTime.fromISO(s.final, { zone: s.timezone || "America/Bogota" }).toUTC();
-
-        try {
-          await db.execute(
-            `INSERT INTO fechas (
-              inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date, room_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
-              inicio = excluded.inicio,
-              final = excluded.final,
-              titulo = excluded.titulo,
-              tipo_encuentro = excluded.tipo_encuentro,
-              link_mot = COALESCE(excluded.link_mot, fechas.link_mot),
-              room_id = COALESCE(excluded.room_id, fechas.room_id)`,
-            [
-              sStartUTC.toISO(),
-              sEndUTC.toISO(),
-              s.type || "Clase en vivo",
-              selectedCourseId,
-              s.titulo || "Clase",
-              link_mot,
-              localDate,
-              room_id,
-            ]
-          );
-          results.push({ date: localDate, status: "success" });
-        } catch (dbError) {
-          console.error("Error en DB:", dbError.message);
-          results.push({ date: localDate, status: "failed" });
-        }
+      // Guardar/actualizar en DB
+      try {
+        await db.execute(
+          `INSERT INTO fechas (
+            inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date, room_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
+            inicio = excluded.inicio,
+            final = excluded.final,
+            titulo = excluded.titulo,
+            tipo_encuentro = excluded.tipo_encuentro,
+            link_mot = COALESCE(excluded.link_mot, fechas.link_mot),
+            room_id = COALESCE(excluded.room_id, fechas.room_id)`,
+          [
+            startUTC.toISO(),
+            endUTC.toISO(),
+            type,
+            selectedCourseId,
+            titulo,
+            link_mot,
+            localDate,
+            room_id,
+          ]
+        );
+        results.push({ date: localDate, status: "success" });
+      } catch (dbError) {
+        console.error("Error en DB:", dbError.message);
+        results.push({ date: localDate, status: "failed" });
       }
     }
 
@@ -199,5 +205,6 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
     return res.status(500).json({ error: "Error al procesar solicitud" });
   }
 });
+
 
 module.exports = router;
