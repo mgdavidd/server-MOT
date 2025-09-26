@@ -5,7 +5,6 @@ const JWT_SECRET = process.env.JWT_SECRET || "clave_super_segura";
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const { DateTime } = require("luxon");
-const VIDEOCHAT_URL = process.env.VIDEOCHAT_URL
 
 router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   const { selectedCourseId } = req.params;
