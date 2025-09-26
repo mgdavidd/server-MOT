@@ -81,23 +81,26 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   }
 });
 
-// NUEVA RUTA: Proxy de autenticación para acceso seguro a videollamadas
+// RUTA PROXY MEJORADA: Autenticación para acceso seguro a videollamadas
 router.get("/courses/:courseId/join/:roomId", async (req, res) => {
   const { courseId, roomId } = req.params;
   
   console.log("🔐 [PROXY] Iniciando autenticación proxy");
   console.log("📋 [PROXY] Course ID:", courseId);
   console.log("📋 [PROXY] Room ID:", roomId);
-  console.log(req.query)
   
+  // Obtener token de múltiples fuentes con prioridad
   const token = 
-  req.headers.authorization?.split(" ")[1] ||
-  req.cookies.token ||
-  req.query.auth;
-  console.log(req.cookies,"y ", req.headers)
+    req.query.auth || // Primero el query parameter (más confiable para redirects)
+    req.headers.authorization?.split(" ")[1] ||
+    req.cookies.token;
+  
+  console.log("📋 [PROXY] Token obtenido:", token ? `${token.substring(0, 20)}...` : "NO TOKEN");
+  console.log("📋 [PROXY] Query parameters:", req.query);
+  console.log("📋 [PROXY] Cookies recibidas:", req.cookies);
   
   if (!token) {
-    console.log("❌ [PROXY] Token no encontrado");
+    console.log("❌ [PROXY] Token no encontrado en ninguna fuente");
     return res.status(401).json({ error: "Token de autenticación requerido" });
   }
 
@@ -105,6 +108,12 @@ router.get("/courses/:courseId/join/:roomId", async (req, res) => {
     // Verificar token de usuario
     const userPayload = jwt.verify(token, JWT_SECRET);
     console.log("✅ [PROXY] Token válido para usuario:", userPayload.id);
+    console.log("📋 [PROXY] Datos del usuario:", {
+      id: userPayload.id,
+      nombre: userPayload.nombre,
+      email: userPayload.email,
+      rol: userPayload.rol
+    });
     
     // Validar acceso al curso
     const hasAccess = await validateUserCourseAccess(userPayload.id, courseId);
@@ -122,41 +131,51 @@ router.get("/courses/:courseId/join/:roomId", async (req, res) => {
     );
     
     if (roomResult.rows.length === 0) {
-      console.log("❌ [PROXY] Sala no encontrada");
+      console.log("❌ [PROXY] Sala no encontrada en la base de datos");
       return res.status(404).json({ error: "Sala no encontrada" });
     }
     
     const roomData = roomResult.rows[0];
-    console.log("✅ [PROXY] Sala encontrada, redirigiendo...");
+    console.log("✅ [PROXY] Sala encontrada en DB");
     
     // Extraer el token de la sala del link_mot
-    const urlParams = new URLSearchParams(roomData.link_mot.split('?')[1]);
-    const roomToken = urlParams.get('token');
-    
-    if (!roomToken) {
-      console.log("❌ [PROXY] Token de sala no encontrado");
-      return res.status(500).json({ error: "Error en configuración de sala" });
+    let roomToken;
+    try {
+      const urlParts = roomData.link_mot.split('?');
+      if (urlParts.length > 1) {
+        const urlParams = new URLSearchParams(urlParts[1]);
+        roomToken = urlParams.get('token');
+      }
+    } catch (err) {
+      console.error("❌ [PROXY] Error extrayendo token de sala:", err.message);
     }
     
-    // Crear una cookie segura con el token de usuario para el dominio de videollamadas
-    res.cookie('mot_user_token', token, { 
-      httpOnly: true, 
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
-      domain: process.env.NODE_ENV === 'production' ? '.onrender.com' : undefined,
-      maxAge: 30 * 60 * 1000 // 30 minutos
-    });
-    console.log(process.env.NODE_ENV)
+    if (!roomToken) {
+      console.log("❌ [PROXY] Token de sala no encontrado en link_mot");
+      // Intentar generar un token nuevo si no existe
+      try {
+        roomToken = jwt.sign({ room_id: roomId, course_id: courseId }, JWT_SECRET);
+        console.log("✅ [PROXY] Token de sala generado nuevo");
+      } catch (err) {
+        console.log("❌ [PROXY] Error generando token de sala:", err.message);
+        return res.status(500).json({ error: "Error en configuración de sala" });
+      }
+    } else {
+      console.log("✅ [PROXY] Token de sala extraído correctamente");
+    }
     
-    // Redirigir al servidor de videollamadas
-    const redirectUrl = `${process.env.VIDEOCHAT_URL}/join?token=${roomToken}`;
+    // Crear URL de redirección con el token de usuario como parámetro
+    const redirectUrl = `${process.env.VIDEOCHAT_URL}/join?token=${roomToken}&user_token=${encodeURIComponent(token)}`;
     console.log("🚀 [PROXY] Redirigiendo a:", redirectUrl);
     
     return res.redirect(redirectUrl);
     
   } catch (err) {
     console.error("❌ [PROXY] Error en autenticación:", err.message);
-    return res.status(401).json({ error: "Token inválido" });
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+    return res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 
@@ -372,7 +391,7 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
             date: localDate, 
             status: "success", 
             action: action,
-            room_id: room_id ? room_id.substring(0, 8) + '...' : null // Log truncado
+            room_id: room_id ? room_id.substring(0, 8) + '...' : null
           };
         } catch (dbError) {
           console.error(`Error procesando ${localDate}:`, dbError.message);
