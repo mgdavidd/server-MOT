@@ -14,6 +14,22 @@ const CACHE_TTL = 60 * 1000; // 1 minuto
 let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL = 100; // 100ms mínimo entre peticiones
 
+// Función para validar acceso del usuario al curso
+async function validateUserCourseAccess(userId, courseId) {
+  try {
+    const result = await db.execute(
+      `SELECT 1 FROM matriculas WHERE idUsuario = ? AND idCurso = ? 
+       UNION 
+       SELECT 1 FROM cursos WHERE id = ? AND admin = ?`,
+      [userId, courseId, courseId, userId]
+    );
+    return result.rows.length > 0;
+  } catch (err) {
+    console.error("Error validando acceso al curso:", err);
+    return false;
+  }
+}
+
 router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   const { selectedCourseId } = req.params;
 
@@ -46,14 +62,15 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
       [selectedCourseId, limiteInferior]
     );
 
-    // Devolver las fechas exactamente como están en la base de datos (UTC)
+    // Devolver las fechas con enlaces seguros a través del proxy
     const fechasFormateadas = fechas.rows.map((fecha) => ({
       ...fecha,
       inicio: fecha.inicio,
       final: fecha.final,
       titulo: fecha.titulo,
       tipo: fecha.tipo,
-      join_link: fecha.join_link,
+      // Cambiar el enlace para usar el proxy seguro
+      join_link: fecha.room_id ? `/courses/${selectedCourseId}/join/${fecha.room_id}` : null,
       recording_url: fecha.recording_url,
     }));
 
@@ -61,6 +78,79 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
   } catch (err) {
     console.error("Error obteniendo fechas:", err);
     return res.status(500).json({ error: "Error del servidor" });
+  }
+});
+
+// NUEVA RUTA: Proxy de autenticación para acceso seguro a videollamadas
+router.get("/courses/:courseId/join/:roomId", async (req, res) => {
+  const { courseId, roomId } = req.params;
+  
+  console.log("🔐 [PROXY] Iniciando autenticación proxy");
+  console.log("📋 [PROXY] Course ID:", courseId);
+  console.log("📋 [PROXY] Room ID:", roomId);
+  
+  const token = req.headers.authorization?.split(" ")[1] || req.cookies.token;
+  
+  if (!token) {
+    console.log("❌ [PROXY] Token no encontrado");
+    return res.status(401).json({ error: "Token de autenticación requerido" });
+  }
+
+  try {
+    // Verificar token de usuario
+    const userPayload = jwt.verify(token, JWT_SECRET);
+    console.log("✅ [PROXY] Token válido para usuario:", userPayload.id);
+    
+    // Validar acceso al curso
+    const hasAccess = await validateUserCourseAccess(userPayload.id, courseId);
+    if (!hasAccess) {
+      console.log("❌ [PROXY] Usuario sin acceso al curso");
+      return res.status(403).json({ error: "Sin acceso al curso" });
+    }
+    
+    console.log("✅ [PROXY] Acceso al curso validado");
+    
+    // Verificar que la sala existe y obtener el token de la sala
+    const roomResult = await db.execute(
+      `SELECT room_id, link_mot FROM fechas WHERE room_id = ? AND idCurso = ?`,
+      [roomId, courseId]
+    );
+    
+    if (roomResult.rows.length === 0) {
+      console.log("❌ [PROXY] Sala no encontrada");
+      return res.status(404).json({ error: "Sala no encontrada" });
+    }
+    
+    const roomData = roomResult.rows[0];
+    console.log("✅ [PROXY] Sala encontrada, redirigiendo...");
+    
+    // Extraer el token de la sala del link_mot
+    const urlParams = new URLSearchParams(roomData.link_mot.split('?')[1]);
+    const roomToken = urlParams.get('token');
+    
+    if (!roomToken) {
+      console.log("❌ [PROXY] Token de sala no encontrado");
+      return res.status(500).json({ error: "Error en configuración de sala" });
+    }
+    
+    // Crear una cookie segura con el token de usuario para el dominio de videollamadas
+    res.cookie('mot_user_token', token, { 
+      httpOnly: true, 
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'none',
+      domain: process.env.NODE_ENV === 'production' ? '.onrender.com' : 'localhost',
+      maxAge: 30 * 60 * 1000 // 30 minutos
+    });
+    
+    // Redirigir al servidor de videollamadas
+    const redirectUrl = `${process.env.VIDEOCHAT_URL}/join?token=${roomToken}`;
+    console.log("🚀 [PROXY] Redirigiendo a:", redirectUrl);
+    
+    return res.redirect(redirectUrl);
+    
+  } catch (err) {
+    console.error("❌ [PROXY] Error en autenticación:", err.message);
+    return res.status(401).json({ error: "Token inválido" });
   }
 });
 
