@@ -88,8 +88,12 @@ router.get("/courses/:courseId/join/:roomId", async (req, res) => {
   console.log("🔐 [PROXY] Iniciando autenticación proxy");
   console.log("📋 [PROXY] Course ID:", courseId);
   console.log("📋 [PROXY] Room ID:", roomId);
+  console.log(req.query)
   
-  const token = req.headers.authorization?.split(" ")[1] || req.cookies.token;
+  const token = 
+  req.headers.authorization?.split(" ")[1] ||
+  req.cookies.token ||
+  req.query.auth;
   console.log(req.cookies,"y ", req.headers)
   
   if (!token) {
