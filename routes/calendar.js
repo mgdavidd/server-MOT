@@ -18,7 +18,7 @@ const MIN_REQUEST_INTERVAL = 100; // 100ms mínimo entre peticiones
 async function validateUserCourseAccess(userId, courseId) {
   try {
     const result = await db.execute(
-      `SELECT 1 FROM matriculas WHERE idUsuario = ? AND idCurso = ? 
+      `SELECT 1 FROM cursos_estudiante WHERE idUsuario = ? AND idCurso = ? 
        UNION 
        SELECT 1 FROM cursos WHERE id = ? AND admin = ?`,
       [userId, courseId, courseId, userId]
