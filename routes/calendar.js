@@ -143,9 +143,10 @@ router.get("/courses/:courseId/join/:roomId", async (req, res) => {
       httpOnly: true, 
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'none',
-      domain: process.env.NODE_ENV === 'production' ? '.onrender.com' : 'localhost',
+      domain: process.env.NODE_ENV === 'production' ? '.onrender.com' : undefined,
       maxAge: 30 * 60 * 1000 // 30 minutos
     });
+    console.log(process.env.NODE_ENV)
     
     // Redirigir al servidor de videollamadas
     const redirectUrl = `${process.env.VIDEOCHAT_URL}/join?token=${roomToken}`;
