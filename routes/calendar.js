@@ -60,7 +60,6 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   const { sessions = [] } = req.body;
   const { selectedCourseId } = req.params;
 
-  // Validar token
   const token = req.headers.authorization?.split(" ")[1];
   let userPayload;
   try {
@@ -70,30 +69,18 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   }
 
   try {
-    // Verificar que el usuario sea admin del curso
-    const isOwner =
-      (
-        await db.execute(
-          `SELECT id FROM cursos WHERE id = ? AND admin = ?`,
-          [selectedCourseId, userPayload.id]
-        )
-      ).rows.length > 0;
+    const isOwner = (await db.execute(
+      `SELECT id FROM cursos WHERE id = ? AND admin = ?`,
+      [selectedCourseId, userPayload.id]
+    )).rows.length > 0;
 
     if (!isOwner) {
       return res.status(403).json({ error: "No autorizado" });
     }
 
     const results = [];
-    const cacheRooms = new Map(); // cache interno para no repetir llamadas
-
     for (const s of sessions) {
-      const {
-        inicio,
-        final,
-        titulo = "Clase",
-        type = "Clase en vivo",
-        timezone = "America/Bogota",
-      } = s;
+      const { inicio, final, titulo = "Clase", type = "Clase en vivo", timezone = "America/Bogota" } = s;
 
       if (!inicio || !final) {
         console.error("Campos faltantes:", { inicio, final });
@@ -110,64 +97,50 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
       }
 
       if (endUTC <= startUTC) {
-        console.error(
-          `Hora final debe ser mayor a hora inicial (${inicio} - ${final})`
-        );
+        console.error(`Hora final debe ser mayor a hora inicial (${inicio} - ${final})`);
         continue;
       }
 
       // Usar fecha LOCAL como clave única
       const localDate = DateTime.fromISO(inicio, { zone: timezone }).toISODate();
 
+      // Verificar si ya existe una sala para esta fecha en el curso
+      const existingRoom = await db.execute(
+        `SELECT room_id, link_mot FROM fechas 
+         WHERE idCurso = ? AND fecha_date = ?`,
+        [selectedCourseId, localDate]
+      );
+
       let room_id = null;
       let link_mot = null;
 
-      // 1. Revisar en cache (misma ejecución)
-      if (cacheRooms.has(localDate)) {
-        ({ room_id, link_mot } = cacheRooms.get(localDate));
-      } else {
-        // 2. Revisar en DB
-        const existingRoom = await db.execute(
-          `SELECT room_id, link_mot FROM fechas 
-           WHERE idCurso = ? AND fecha_date = ?`,
-          [selectedCourseId, localDate]
-        );
-
-        if (existingRoom.rows.length > 0 && existingRoom.rows[0].room_id) {
-          room_id = existingRoom.rows[0].room_id;
-          link_mot = existingRoom.rows[0].link_mot;
-        } else {
-          // 3. Solo si no existe en DB ni cache, pedir nueva sala
-          try {
-            const payload = {
-              course_id: selectedCourseId,
-              start_utc: startUTC.toISO(),
-              end_utc: endUTC.toISO(),
-              session_date: localDate,
-            };
-
-            const { data } = await axios.post(
-              `${VIDEOCHAT_URL}/api/calls`,
-              payload,
-              {
-                headers: {
-                  Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}`,
-                },
-              }
-            );
-
-            link_mot = data.link;
-            room_id = data.room_id;
-          } catch (err) {
-            console.error("Error al generar sala:", err.message);
-          }
-        }
-
-        // Guardar en cache para próximos usos
-        cacheRooms.set(localDate, { room_id, link_mot });
+      if (existingRoom.rows.length > 0 && existingRoom.rows[0].room_id) {
+        room_id = existingRoom.rows[0].room_id;
+        link_mot = existingRoom.rows[0].link_mot;
       }
 
-      // Guardar/actualizar en DB
+        try {
+          const { VIDEOCHAT_URL } = process.env;
+          const payload = {
+            course_id: selectedCourseId,
+            start_utc: startUTC.toISO(),
+            end_utc: endUTC.toISO(),
+            session_date: localDate,
+            room_id: room_id
+          };
+
+          const { data } = await axios.post(
+            `${VIDEOCHAT_URL}/api/calls`,
+            payload,
+            { headers: { Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}` } }
+          );
+
+          link_mot = data.link;
+          room_id = data.room_id;
+        } catch (err) {
+          console.error("Error al generar sala:", err.message);
+        }
+
       try {
         await db.execute(
           `INSERT INTO fechas (
@@ -188,7 +161,7 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
             titulo,
             link_mot,
             localDate,
-            room_id,
+            room_id
           ]
         );
         results.push({ date: localDate, status: "success" });
@@ -205,4 +178,4 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   }
 });
 
-export default router;
+module.exports = router;
