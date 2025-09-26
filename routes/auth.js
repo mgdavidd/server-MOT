@@ -6,7 +6,6 @@ const { google } = require("googleapis");
 const jwt = require("jsonwebtoken");
 
 const JWT_SECRET = process.env.JWT_SECRET || "clave_super_segura";
-const FRONT_MOT_URL = process.env.FRONT_MOT_URL
 
 const oAuth2Client = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID,
@@ -105,9 +104,9 @@ router.post("/signup", async (req, res) => {
 });
 
 router.post("/choose-username", async (req, res) => {
-  const { userName, password, email, google_token, areaInteres, rol } = req.body;
+  const { userName, password, email, google_token, areaInteres } = req.body;
 
-  if (!userName || !password || !email || !google_token || !rol) {
+  if (!userName || !password || !email || !google_token) {
     return res.status(400).json({ error: "Faltan datos obligatorios" });
   }
 
@@ -120,8 +119,8 @@ router.post("/choose-username", async (req, res) => {
     }
 
     await db.execute(
-      "INSERT INTO usuarios (nombre, contrasena, email, rol, google_token, area) VALUES (?, ?, ?, ?, ?, ?)",
-      [userName, password, email, rol, JSON.stringify(google_token), areaInteres]
+      "INSERT INTO usuarios (nombre, contrasena, email, rol, google_token, area) VALUES (?, ?, ?, 'estudiante', ?, ?)",
+      [userName, password, email, JSON.stringify(google_token), areaInteres]
     );
 
     const result = await db.execute("SELECT * FROM usuarios WHERE nombre = ?", [
@@ -134,7 +133,6 @@ router.post("/choose-username", async (req, res) => {
     res.status(500).json({ error: "Error interno al registrar con Google" });
   }
 });
-
 
 router.get("/auth/google", (req, res) => {
   const authUrl = oAuth2Client.generateAuthUrl({
@@ -191,20 +189,20 @@ router.get("/auth/google/callback", async (req, res) => {
 
       // 🔹 Redirigir enviando user + token
       return res.redirect(
-        `${FRONT_MOT_URL}/oauth-success?user=${encodeURIComponent(
+        `http://localhost:5173/oauth-success?user=${encodeURIComponent(
           JSON.stringify(user)
         )}&token=${encodeURIComponent(jwtToken)}`
       );
     }
 
     return res.redirect(
-      `${FRONT_MOT_URL}/choose-username?email=${encodeURIComponent(
+      `http://localhost:5173/choose-username?email=${encodeURIComponent(
         userEmail
       )}&google_token=${encodeURIComponent(JSON.stringify(tokens))}`
     );
   } catch (err) {
     console.error("Error en Google Auth:", err);
-    res.redirect(`${FRONT_MOT_URL}?error=auth`);
+    res.redirect("http://localhost:5173?error=auth");
   }
 });
 
