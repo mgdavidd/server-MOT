@@ -13,6 +13,33 @@ const oAuth2Client = new OAuth2Client(
   process.env.GOOGLE_REDIRECT_URI
 );
 
+// 🔥 CORRECCIÓN: Función consistente para generar tokens
+const generateToken = (user) => {
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      nombre: user.nombre,
+      rol: user.rol, // 🔥 SIEMPRE usar 'rol' para consistencia
+    },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+};
+
+// 🔥 CORRECCIÓN: Función consistente para formatear usuarios
+const formatUser = (dbUser) => {
+  return {
+    id: dbUser.id,
+    nombre: dbUser.nombre,
+    nombre_usuario: dbUser.nombre_usuario,
+    email: dbUser.email,
+    rol: dbUser.rol,
+    color_perfil: dbUser.color_perfil,
+    area: dbUser.area,
+  };
+};
+
 router.post("/login", async (req, res) => {
   const { userName, password } = req.body;
   try {
@@ -23,28 +50,8 @@ router.post("/login", async (req, res) => {
 
     if (result.rows.length > 0) {
       const dbUser = result.rows[0];
-
-      const user = {
-        id: dbUser.id,
-        nombre: dbUser.nombre,
-        nombre_usuario: dbUser.nombre_usuario,
-        email: dbUser.email,
-        rol: dbUser.rol,
-        color_perfil: dbUser.color_perfil,
-        area: dbUser.area,
-        // no incluimos fotoPerfil aquí
-      };
-
-      const token = jwt.sign(
-        {
-          id: user.id,
-          email: user.email,
-          nombre: user.nombre,
-          rol: user.rol,
-        },
-        JWT_SECRET,
-        { expiresIn: "7d" }
-      );
+      const user = formatUser(dbUser);
+      const token = generateToken(user);
 
       return res.json({ success: true, user, token });
     }
@@ -54,7 +61,6 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Error interno del servidor" });
   }
 });
-
 
 router.post("/signup", async (req, res) => {
   const { userName, email, password, isAdmin } = req.body;
@@ -85,16 +91,9 @@ router.post("/signup", async (req, res) => {
     const result = await db.execute("SELECT * FROM usuarios WHERE nombre = ?", [
       userName,
     ]);
-    const user = result.rows[0];
-    const token = jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-        role: user.rol,
-      },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const dbUser = result.rows[0];
+    const user = formatUser(dbUser);
+    const token = generateToken(user); // 🔥 Usar función consistente
 
     return res.json({ success: true, user, token });
   } catch (err) {
@@ -118,7 +117,6 @@ router.post("/choose-username", async (req, res) => {
       return res.status(409).json({ error: "Nombre de usuario ya existe" });
     }
 
-    // 🔥 CORRECCIÓN: Usar el rol que viene del frontend, no uno fijo
     await db.execute(
       "INSERT INTO usuarios (nombre, contrasena, email, rol, google_token, area) VALUES (?, ?, ?, ?, ?, ?)",
       [userName, password, email, rol, JSON.stringify(google_token), areaInteres]
@@ -127,19 +125,9 @@ router.post("/choose-username", async (req, res) => {
     const result = await db.execute("SELECT * FROM usuarios WHERE nombre = ?", [
       userName,
     ]);
-    const user = result.rows[0];
-
-    // 🔥 CORRECCIÓN: Generar token JWT consistente
-    const token = jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-        nombre: user.nombre,
-        rol: user.rol,
-      },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const dbUser = result.rows[0];
+    const user = formatUser(dbUser);
+    const token = generateToken(user); // 🔥 Usar función consistente
 
     return res.json({ success: true, user, token });
   } catch (err) {
@@ -170,7 +158,7 @@ router.get("/auth/google/callback", async (req, res) => {
     const people = google.people({ version: "v1", auth: oAuth2Client });
     const { data } = await people.people.get({
       resourceName: "people/me",
-      personFields: "emailAddresses",
+      personFields: "emailAddresses,names",
     });
 
     const userEmail = data.emailAddresses?.[0]?.value?.toLowerCase();
@@ -187,25 +175,15 @@ router.get("/auth/google/callback", async (req, res) => {
         [JSON.stringify(tokens), userEmail]
       );
 
-      const user = userResult.rows[0];
+      const dbUser = userResult.rows[0];
+      const user = formatUser(dbUser);
+      const token = generateToken(user); // 🔥 Usar función consistente
 
-      // 🔹 Generar el mismo JWT que usas en /login
-      const jwtToken = jwt.sign(
-        {
-          id: user.id,
-          email: user.email,
-          nombre: user.nombre,
-          role: user.rol,
-        },
-        JWT_SECRET,
-        { expiresIn: "7d" }
-      );
-
-      // 🔹 Redirigir enviando user + token
+      // 🔥 CORRECCIÓN: Redirigir con user y token consistentes
       return res.redirect(
         `https://front-mot.onrender.com/oauth-success?user=${encodeURIComponent(
           JSON.stringify(user)
-        )}&token=${encodeURIComponent(jwtToken)}`
+        )}&token=${encodeURIComponent(token)}`
       );
     }
 
