@@ -104,9 +104,9 @@ router.post("/signup", async (req, res) => {
 });
 
 router.post("/choose-username", async (req, res) => {
-  const { userName, password, email, google_token, areaInteres } = req.body;
+  const { userName, password, email, google_token, areaInteres, rol } = req.body;
 
-  if (!userName || !password || !email || !google_token) {
+  if (!userName || !password || !email || !google_token || !rol) {
     return res.status(400).json({ error: "Faltan datos obligatorios" });
   }
 
@@ -118,16 +118,30 @@ router.post("/choose-username", async (req, res) => {
       return res.status(409).json({ error: "Nombre de usuario ya existe" });
     }
 
+    // 🔥 CORRECCIÓN: Usar el rol que viene del frontend, no uno fijo
     await db.execute(
-      "INSERT INTO usuarios (nombre, contrasena, email, rol, google_token, area) VALUES (?, ?, ?, 'estudiante', ?, ?)",
-      [userName, password, email, JSON.stringify(google_token), areaInteres]
+      "INSERT INTO usuarios (nombre, contrasena, email, rol, google_token, area) VALUES (?, ?, ?, ?, ?, ?)",
+      [userName, password, email, rol, JSON.stringify(google_token), areaInteres]
     );
 
     const result = await db.execute("SELECT * FROM usuarios WHERE nombre = ?", [
       userName,
     ]);
+    const user = result.rows[0];
 
-    return res.json({ success: true, user: result.rows[0] });
+    // 🔥 CORRECCIÓN: Generar token JWT consistente
+    const token = jwt.sign(
+      {
+        id: user.id,
+        email: user.email,
+        nombre: user.nombre,
+        rol: user.rol,
+      },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    return res.json({ success: true, user, token });
   } catch (err) {
     console.error("Error creando usuario:", err);
     res.status(500).json({ error: "Error interno al registrar con Google" });
