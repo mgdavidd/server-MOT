@@ -10,10 +10,6 @@ const { DateTime } = require("luxon");
 const roomCache = new Map();
 const CACHE_TTL = 60 * 1000; // 1 minuto
 
-// Rate limiting interno
-let lastRequestTime = 0;
-const MIN_REQUEST_INTERVAL = 100; // 100ms entre peticiones
-
 async function validateUserCourseAccess(userId, courseId) {
   try {
     const result = await db.execute(
@@ -129,63 +125,6 @@ router.get("/courses/:courseId/join/:roomId", async (req, res) => {
   }
 });
 
-async function makeRateLimitedRequest(url, payload, headers) {
-  const now = Date.now();
-  const diff = now - lastRequestTime;
-  if (diff < MIN_REQUEST_INTERVAL) {
-    await new Promise((r) => setTimeout(r, MIN_REQUEST_INTERVAL - diff));
-  }
-  lastRequestTime = Date.now();
-  return axios.post(url, payload, { headers, timeout: 5000 });
-}
-
-async function getOrCreateRoom(courseId, localDate, startUTC, endUTC, existingRoom) {
-  const cacheKey = `${courseId}-${localDate}-${startUTC.toISO()}-${endUTC.toISO()}`;
-
-  if (roomCache.has(cacheKey)) {
-    const cached = roomCache.get(cacheKey);
-    if (Date.now() - cached.timestamp < CACHE_TTL) {
-      return { ...cached, action: "cached" };
-    }
-    roomCache.delete(cacheKey);
-  }
-
-  const hasExisting = existingRoom.rows.length > 0 && existingRoom.rows[0].room_id;
-
-  try {
-    const { VIDEOCHAT_URL } = process.env;
-    const payload = {
-      course_id: courseId,
-      start_utc: startUTC.toISO(),
-      end_utc: endUTC.toISO(),
-      session_date: localDate,
-      room_id: hasExisting ? existingRoom.rows[0].room_id : null,
-    };
-
-    const { data } = await makeRateLimitedRequest(
-      `${VIDEOCHAT_URL}/api/calls`,
-      payload,
-      { Authorization: `Bearer ${jwt.sign(payload, JWT_SECRET)}` }
-    );
-
-    const roomData = { room_id: data.room_id, link_mot: data.link };
-
-    roomCache.set(cacheKey, { ...roomData, timestamp: Date.now() });
-
-    return { ...roomData, action: hasExisting ? "updated" : "created" };
-  } catch (err) {
-    console.error("Error procesando sala:", err.message);
-    if (hasExisting) {
-      return {
-        room_id: existingRoom.rows[0].room_id,
-        link_mot: existingRoom.rows[0].link_mot,
-        action: "fallback",
-      };
-    }
-    return { room_id: null, link_mot: null, action: "failed" };
-  }
-}
-
 router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   const { sessions = [] } = req.body;
   const { selectedCourseId } = req.params;
@@ -221,66 +160,49 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
       return startUTC.isValid && endUTC.isValid && endUTC > startUTC;
     });
 
-    const localDates = validSessions.map((s) =>
-      DateTime.fromISO(s.inicio, {
-        zone: s.timezone || "America/Bogota",
-      }).toISODate()
+    // 🔹 Mandamos todas las sesiones en un solo request al servidor de videollamadas
+    const { VIDEOCHAT_URL } = process.env;
+    const { data } = await axios.post(
+      `${VIDEOCHAT_URL}/api/calls`,
+      {
+        course_id: selectedCourseId,
+        sessions: validSessions,
+      },
+      { headers: { Authorization: `Bearer ${jwt.sign({ course_id: selectedCourseId }, JWT_SECRET)}` } }
     );
 
-    const existingRooms = await db.execute(
-      `SELECT room_id, link_mot, fecha_date FROM fechas 
-       WHERE idCurso = ? AND fecha_date IN (${localDates.map(() => "?").join(",")})`,
-      [selectedCourseId, ...localDates]
-    );
-
-    const roomMap = new Map();
-    existingRooms.rows.forEach((room) => roomMap.set(room.fecha_date, room));
-
-    const results = [];
-    for (const s of validSessions) {
-      const { inicio, final, titulo = "Clase", type = "Clase en vivo", timezone = "America/Bogota" } = s;
+    // 🔹 Guardamos en DB todas las salas recibidas
+    for (const session of data.results) {
+      const { inicio, final, titulo, type, timezone, room_id, link } = session;
       const startUTC = DateTime.fromISO(inicio, { zone: timezone }).toUTC();
       const endUTC = DateTime.fromISO(final, { zone: timezone }).toUTC();
       const localDate = DateTime.fromISO(inicio, { zone: timezone }).toISODate();
-      try {
-        const { room_id, link_mot, action } = await getOrCreateRoom(
+
+      await db.execute(
+        `INSERT INTO fechas (
+          inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date, room_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
+          inicio = excluded.inicio,
+          final = excluded.final,
+          titulo = excluded.titulo,
+          tipo_encuentro = excluded.tipo_encuentro,
+          link_mot = COALESCE(excluded.link_mot, fechas.link_mot),
+          room_id = COALESCE(excluded.room_id, fechas.room_id)`,
+        [
+          startUTC.toISO(),
+          endUTC.toISO(),
+          type,
           selectedCourseId,
+          titulo,
+          link,
           localDate,
-          startUTC,
-          endUTC,
-          { rows: roomMap.get(localDate) ? [roomMap.get(localDate)] : [] }
-        );
-
-        await db.execute(
-          `INSERT INTO fechas (
-            inicio, final, tipo_encuentro, idCurso, titulo, link_mot, fecha_date, room_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(idCurso, fecha_date) DO UPDATE SET
-            inicio = excluded.inicio,
-            final = excluded.final,
-            titulo = excluded.titulo,
-            tipo_encuentro = excluded.tipo_encuentro,
-            link_mot = COALESCE(excluded.link_mot, fechas.link_mot),
-            room_id = COALESCE(excluded.room_id, fechas.room_id)`,
-          [
-            startUTC.toISO(),
-            endUTC.toISO(),
-            type,
-            selectedCourseId,
-            titulo,
-            link_mot,
-            localDate,
-            room_id,
-          ]
-        );
-
-        results.push({ date: localDate, status: "success", action });
-      } catch {
-        results.push({ date: localDate, status: "failed" });
-      }
+          room_id,
+        ]
+      );
     }
 
-    return res.json({ results });
+    return res.json({ results: data.results });
   } catch (err) {
     console.error("Error crítico:", err);
     return res.status(500).json({ error: "Error al procesar solicitud" });
