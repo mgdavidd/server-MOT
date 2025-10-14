@@ -10,6 +10,7 @@ router.use("/", require("./videoLinks"));
 router.use("/", require("./student"));
 router.use("/", require("./quizzes"));
 router.use("/", require("./foros"));
+router.use("/", require("./pdfExtraction"));
 
 module.exports = router;
 

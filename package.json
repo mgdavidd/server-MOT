@@ -21,8 +21,9 @@
     "googleapis": "^150.0.1",
     "jsonwebtoken": "^9.0.2",
     "luxon": "^3.6.1",
-    "multer": "^2.0.1",
+    "multer": "^2.0.2",
     "openai": "^6.1.0",
+    "pdf-parse": "^2.3.9",
     "socket.io": "^4.8.1"
   }
 }
