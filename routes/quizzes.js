@@ -1,7 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../db");
-const { DateTime } = require("luxon");
+const OpenAI = require("openai");
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Crear prueba final de módulo
 router.post("/modules/:moduleId/quizzes", async (req, res) => {
@@ -18,6 +19,178 @@ router.post("/modules/:moduleId/quizzes", async (req, res) => {
         res.status(500).json({ error: "Error insertando prueba" });
     }
 });
+
+// 🆕 RUTA ACTUALIZADA: Generar prueba con IA (recibe contexto desde frontend)
+router.post("/modules/quizzes/ai", async (req, res) => {
+  const { contexto, num_preguntas, nivel_dificultad } = req.body;
+
+  try {
+    // Validaciones
+    if (!contexto || contexto.trim().length < 100) {
+      return res.status(400).json({ 
+        error: "El contexto debe tener al menos 100 caracteres" 
+      });
+    }
+
+    if (!num_preguntas || num_preguntas < 3 || num_preguntas > 25) {
+      return res.status(400).json({ 
+        error: "El número de preguntas debe estar entre 3 y 25" 
+      });
+    }
+
+    const nivelesValidos = ["basico", "intermedio", "avanzado"];
+    if (!nivel_dificultad || !nivelesValidos.includes(nivel_dificultad)) {
+      return res.status(400).json({ 
+        error: "Nivel de dificultad inválido" 
+      });
+    }
+
+    console.log(`Generando ${num_preguntas} preguntas de nivel ${nivel_dificultad}...`);
+    console.log(`Contexto recibido: ${contexto.length} caracteres`);
+
+    // Construir el prompt optimizado
+    const prompt = `Basándote en el siguiente contenido del curso, crea ${num_preguntas} preguntas de opción múltiple con nivel de dificultad ${nivel_dificultad}.
+
+CONTENIDO DEL CURSO:
+${contexto}
+
+INSTRUCCIONES:
+- Nivel ${nivel_dificultad}: ${getNivelDescription(nivel_dificultad)}
+- Cada pregunta debe tener entre 3 y 5 opciones
+- Solo una opción debe ser correcta
+- Las preguntas deben estar directamente relacionadas con el contenido proporcionado
+- Evita preguntas ambiguas o con múltiples respuestas válidas`;
+
+    // Llamar a OpenAI
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `Eres un experto en crear evaluaciones educativas de alta calidad.
+
+FORMATO DE RESPUESTA (CRÍTICO):
+Debes responder ÚNICAMENTE con un array JSON válido, sin texto adicional, sin markdown, sin explicaciones.
+
+ESTRUCTURA EXACTA:
+[
+  {
+    "texto": "¿Cuál es el concepto principal de...?",
+    "opciones": [
+      "Opción incorrecta A",
+      "Opción correcta B",
+      "Opción incorrecta C",
+      "Opción incorrecta D"
+    ],
+    "respuestaCorrecta": 1
+  }
+]
+
+REGLAS:
+- respuestaCorrecta es el índice (0-based) de la opción correcta
+- Mínimo 3 opciones, máximo 5 opciones por pregunta
+- Cada opción debe ser clara y concisa
+- La respuesta correcta debe ser inequívoca`
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 3000
+    });
+
+    // Validar estructura de response antes de usarla
+    const choice = response?.choices && response.choices[0];
+    const messageContent = choice?.message?.content || choice?.text || null;
+
+    if (!messageContent) {
+      console.error("OpenAI returned unexpected structure:", response);
+      return res.status(502).json({ error: "Respuesta inválida de OpenAI" });
+    }
+
+    const preguntasGeneradas = messageContent.trim();
+    
+    console.log("✓ Preguntas generadas exitosamente");
+    console.log("Preview:", preguntasGeneradas.substring(0, 150) + "...");
+
+    // Intentar parsear para validar formato
+    try {
+      let cleanJson = preguntasGeneradas;
+      if (cleanJson.startsWith("```json")) {
+        cleanJson = cleanJson.replace(/```json\n?/g, "").replace(/```\n?/g, "");
+      } else if (cleanJson.startsWith("```")) {
+        cleanJson = cleanJson.replace(/```\n?/g, "");
+      }
+      
+      const parsed = JSON.parse(cleanJson);
+      
+      // Validar estructura
+      if (!Array.isArray(parsed)) {
+        throw new Error("La respuesta no es un array");
+      }
+      
+      if (parsed.length !== num_preguntas) {
+        console.warn(`Se generaron ${parsed.length} preguntas en lugar de ${num_preguntas}`);
+      }
+
+      // Validar cada pregunta
+      parsed.forEach((p, idx) => {
+        if (!p.texto || !p.opciones || !Array.isArray(p.opciones) || typeof p.respuestaCorrecta !== 'number') {
+          throw new Error(`Pregunta ${idx + 1} tiene formato inválido`);
+        }
+        if (p.opciones.length < 3 || p.opciones.length > 5) {
+          throw new Error(`Pregunta ${idx + 1} debe tener entre 3 y 5 opciones`);
+        }
+        if (p.respuestaCorrecta < 0 || p.respuestaCorrecta >= p.opciones.length) {
+          throw new Error(`Pregunta ${idx + 1} tiene índice de respuesta inválido`);
+        }
+      });
+
+      console.log("✓ Validación exitosa");
+    } catch (parseError) {
+      console.error("Error de validación:", parseError.message);
+      // Aún así devolvemos la respuesta para que el frontend intente parsearla
+    }
+
+    res.json({ 
+      success: true, 
+      preguntas: preguntasGeneradas
+    });
+
+  } catch (error) {
+    console.error("Error creando prueba con IA:", error);
+    
+    // Mensajes de error más específicos
+    if (error.response?.status === 429) {
+      return res.status(429).json({ 
+        error: "Límite de API excedido. Intenta nuevamente en unos minutos." 
+      });
+    }
+    
+    if (error.response?.status === 401) {
+      return res.status(500).json({ 
+        error: "Error de autenticación con OpenAI. Verifica la API key." 
+      });
+    }
+
+    res.status(500).json({ 
+      error: "Error creando prueba con IA",
+      detalles: error.message 
+    });
+  }
+});
+
+// Helper: Descripción de niveles de dificultad
+function getNivelDescription(nivel) {
+  const descripciones = {
+    basico: "Conceptos fundamentales, definiciones básicas, recordar información simple",
+    intermedio: "Aplicación de conceptos, análisis de situaciones, comparar y contrastar",
+    avanzado: "Síntesis de información compleja, evaluación crítica, resolución de problemas complejos"
+  };
+  return descripciones[nivel] || descripciones.intermedio;
+}
 
 // Obtener pruebas de un módulo
 router.get("/modules/:moduleId/quizzes", async (req, res) => {
@@ -43,7 +216,7 @@ async function calcularNota(respuestas, quizId) {
     }
 
     const respuestasPrueba = await db.execute(
-        "SELECT preguntas FROM pruebas_modulo WHERE id = ?", 
+        "SELECT preguntas FROM pruebas_modulo WHERE id = ?",
         [quizId]
     );
 
@@ -56,7 +229,10 @@ async function calcularNota(respuestas, quizId) {
     let respuestasCorrectas = 0;
 
     preguntas.forEach((pregunta, index) => {
-        if (pregunta.respuestaCorrecta === respuestas[index]) {
+        // Normalizar a number por si llegan strings
+        const correcta = Number(pregunta.respuestaCorrecta ?? pregunta.respuesta_correcta);
+        const respuestaUsuario = Number(respuestas[index]);
+        if (Number.isFinite(correcta) && respuestaUsuario === correcta) {
             respuestasCorrectas++;
         }
     });
@@ -64,15 +240,13 @@ async function calcularNota(respuestas, quizId) {
     return (respuestasCorrectas / totalPreguntas) * 10;
 }
 
-
 // Registrar intento de prueba
 router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
     const { moduleId, quizId } = req.params;
     const { userId, respuestas } = req.body;
     try {
-        // Verificar existencia de la prueba
         const nota_minima_result = await db.execute(
-            "SELECT nota_minima FROM pruebas_modulo WHERE id = ? AND id_modulo = ?", 
+            "SELECT nota_minima FROM pruebas_modulo WHERE id = ? AND id_modulo = ?",
             [quizId, moduleId]
         );
 
@@ -95,7 +269,6 @@ router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
         res.status(500).json({ error: "Error insertando intento de prueba" });
     }
 });
-
 
 // Obtener intentos de un usuario en una prueba
 router.get("/modules/:moduleId/quizzes/:quizId/attempts/:userId", async (req, res) => {
@@ -147,12 +320,15 @@ router.put("/modules/:moduleId/quizzes/:quizId", async (req, res) => {
 router.post("/courses/:courseId/progress", async (req, res) => {
     const { courseId } = req.params;
     const { id_usuario, id_modulo_actual, nota_maxima } = req.body;
-    const moduloAnterior = await db.execute(
-        "SELECT * FROM progreso_modulo WHERE id_usuario = ? AND id_curso = ?",
-        [id_usuario, courseId]
-    );
+
     try {
-        const progresoPrevio = moduloAnterior.rows[0];
+        // Mover la consulta dentro del try y usar patrón rows || [0]
+        const moduloAnterior = await db.execute(
+            "SELECT * FROM progreso_modulo WHERE id_usuario = ? AND id_curso = ?",
+            [id_usuario, courseId]
+        );
+        const rows = moduloAnterior.rows || moduloAnterior[0] || [];
+        const progresoPrevio = rows[0];
 
         if (!progresoPrevio || progresoPrevio.id_modulo_actual < id_modulo_actual) {
             await db.execute(
