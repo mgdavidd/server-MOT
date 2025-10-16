@@ -228,10 +228,6 @@ async function calcularNota(respuestas, quizId) {
         throw new Error("Prueba no encontrada");
     }
 
-    // Parsing robusto: soporta
-    // - campo ya como array (drivers que devuelven objetos)
-    // - string JSON normal: '[...]'
-    // - string doble-escaped: '"[{\\"texto\\":...}]"'
     let preguntas;
     try {
         const raw = preguntasData.preguntas;
@@ -271,29 +267,46 @@ async function calcularNota(respuestas, quizId) {
 router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
     const { moduleId, quizId } = req.params;
     const { userId, respuestas } = req.body;
+
     try {
-        const nota_minima_result = await db.execute(
-            "SELECT nota_minima FROM pruebas_modulo WHERE id = ? AND id_modulo = ?",
-            [quizId, moduleId]
+        // Get previous attempts
+        const [prevAttempts] = await db.execute(
+            "SELECT nota FROM intentos_prueba WHERE id_prueba = ? AND id_usuario = ? ORDER BY nota DESC LIMIT 1",
+            [quizId, userId]
         );
-
-        const notaMinimaRow = (nota_minima_result.rows || nota_minima_result[0])[0];
-        if (!notaMinimaRow) {
-            return res.status(404).json({ error: "Prueba no encontrada" });
-        }
-
+        
+        const notaPrevia = prevAttempts[0]?.nota || null;
+        
+        // Calculate new grade
         const nota = await calcularNota(respuestas, quizId);
-        const aprobado = nota >= notaMinimaRow.nota_minima ? 1 : 0;
+        
+        // Get minimum passing grade
+        const [pruebaData] = await db.execute(
+            "SELECT nota_minima FROM pruebas_modulo WHERE id = ?",
+            [quizId]
+        );
+        const notaMinima = pruebaData[0]?.nota_minima || 7;
+        const aprobado = nota >= notaMinima;
 
+        // Register attempt
         await db.execute(
             "INSERT INTO intentos_prueba (id_prueba, id_usuario, nota, aprobado) VALUES (?, ?, ?, ?)",
             [quizId, userId, nota, aprobado]
         );
 
-        res.json({ success: true, nota, aprobado });
+        res.json({ 
+            success: true, 
+            nota,
+            notaPrevia,
+            aprobado
+        });
+
     } catch (error) {
         console.error("Error insertando intento de prueba:", error);
-        res.status(500).json({ error: "Error insertando intento de prueba" });
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 
@@ -351,26 +364,55 @@ router.post("/courses/:courseId/progress", async (req, res) => {
     const { id_usuario, id_modulo_actual, nota_maxima } = req.body;
 
     try {
-        // Mover la consulta dentro del try y usar patrón rows || [0]
-        const moduloAnterior = await db.execute(
+        // 1. Verificar si existe progreso previo
+        const [progresoActual] = await db.execute(
             "SELECT * FROM progreso_modulo WHERE id_usuario = ? AND id_curso = ?",
             [id_usuario, courseId]
         );
-        const rows = moduloAnterior.rows || moduloAnterior[0] || [];
-        const progresoPrevio = rows[0];
+        
+        const progresoPrevio = (progresoActual.rows || progresoActual[0] || [])[0];
 
-        if (!progresoPrevio || progresoPrevio.id_modulo_actual < id_modulo_actual) {
+        // 2. Si no hay progreso previo, crear nuevo
+        if (!progresoPrevio) {
             await db.execute(
-                `INSERT INTO progreso_modulo (id_usuario, id_curso, id_modulo_actual, nota_maxima, fecha_actualizacion)
-             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-             ON CONFLICT(id_usuario, id_curso) DO UPDATE SET
-                id_modulo_actual = excluded.id_modulo_actual,
-                nota_maxima = CASE WHEN excluded.nota_maxima > progreso_modulo.nota_maxima THEN excluded.nota_maxima ELSE progreso_modulo.nota_maxima END,
-                fecha_actualizacion = CURRENT_TIMESTAMP;`,
+                "INSERT INTO progreso_modulo (id_usuario, id_curso, id_modulo_actual, nota_maxima) VALUES (?, ?, ?, ?)",
                 [id_usuario, courseId, id_modulo_actual, nota_maxima]
             );
+            return res.json({ success: true, action: "created" });
         }
-        res.json({ success: true });
+
+        // 3. Si hay progreso previo, solo actualizar si el nuevo módulo es el siguiente
+        const [moduloInfo] = await db.execute(
+            "SELECT orden FROM modulos WHERE id = ?",
+            [progresoPrevio.id_modulo_actual]
+        );
+        
+        const ordenActual = (moduloInfo.rows || moduloInfo[0] || [])[0]?.orden;
+
+        // 4. Verificar orden del nuevo módulo
+        const [nuevoModuloInfo] = await db.execute(
+            "SELECT orden FROM modulos WHERE id = ?",
+            [id_modulo_actual]
+        );
+        
+        const ordenNuevo = (nuevoModuloInfo.rows || nuevoModuloInfo[0] || [])[0]?.orden;
+
+        // 5. Solo actualizar si el nuevo módulo es el siguiente en orden
+        if (ordenNuevo && ordenActual && ordenNuevo === ordenActual + 1) {
+            await db.execute(
+                "UPDATE progreso_modulo SET id_modulo_actual = ?, nota_maxima = ? WHERE id_usuario = ? AND id_curso = ?",
+                [id_modulo_actual, nota_maxima, id_usuario, courseId]
+            );
+            return res.json({ success: true, action: "updated" });
+        }
+
+        // 6. Si no cumple las condiciones, mantener el progreso actual
+        res.json({ 
+            success: true, 
+            action: "unchanged",
+            message: "No se actualizó el progreso porque no es el siguiente módulo en orden" 
+        });
+
     } catch (error) {
         console.error("Error actualizando progreso:", error);
         res.status(500).json({ error: "Error actualizando progreso" });
