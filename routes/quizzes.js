@@ -286,70 +286,46 @@ router.get("/modules/:moduleId/quizzes/:quizId/attempts/:userId", async (req, re
   }
 });
 
-// 🆕 Actualizar progreso del curso (mejorado)
+// Actualizar o insertar progreso
 router.post("/courses/:courseId/progress", async (req, res) => {
   const { courseId } = req.params;
   const { id_usuario, id_modulo_actual, nota_maxima, modulo_anterior } = req.body;
 
   try {
-    // Verificar si ya existe un registro de progreso para este usuario y curso
-    const checkResult = await db.execute(
+    // Verificar si ya existe un registro de progreso
+    const existing = await db.execute(
       "SELECT * FROM progreso_modulo WHERE id_curso = ? AND id_usuario = ?",
       [courseId, id_usuario]
     );
-    const checkRows = checkResult.rows || checkResult[0] || [];
-    const existingProgress = checkRows[0];
 
-    if (existingProgress) {
-      // Ya existe progreso, actualizar solo si es necesario
-      
-      // Si hay nota_maxima, verificar si es mayor que la existente
-      let shouldUpdateNota = false;
-      let nuevaNota = existingProgress.nota_maxima;
-      
-      if (nota_maxima !== null && nota_maxima !== undefined) {
-        if (existingProgress.nota_maxima === null || nota_maxima > existingProgress.nota_maxima) {
-          shouldUpdateNota = true;
-          nuevaNota = nota_maxima;
-        }
+    if (existing.rows.length > 0) {
+      // Actualizar progreso si el nuevo módulo es posterior al actual
+      const progresoActual = existing.rows[0];
+      if (id_modulo_actual !== progresoActual.id_modulo_actual) {
+        await db.execute(
+          `UPDATE progreso_modulo 
+           SET id_modulo_actual = ?, nota_maxima = COALESCE(?, nota_maxima) 
+           WHERE id_curso = ? AND id_usuario = ?`,
+          [id_modulo_actual, nota_maxima, courseId, id_usuario]
+        );
       }
-
-      // Actualizar módulo actual (avanzar progreso)
-      await db.execute(
-        "UPDATE progreso_modulo SET id_modulo_actual = ?, nota_maxima = ?, updated_at = NOW() WHERE id_curso = ? AND id_usuario = ?",
-        [id_modulo_actual, nuevaNota, courseId, id_usuario]
-      );
-
-      res.json({ 
-        success: true, 
-        action: shouldUpdateNota ? "updated" : "advanced",
-        message: shouldUpdateNota 
-          ? "Progreso y nota actualizados" 
-          : "Módulo actual actualizado"
-      });
     } else {
-      // No existe progreso, crear nuevo registro
+      // Crear nuevo progreso
       await db.execute(
-        "INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima) VALUES (?, ?, ?, ?)",
+        `INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima)
+         VALUES (?, ?, ?, ?)`,
         [courseId, id_usuario, id_modulo_actual, nota_maxima]
       );
-
-      res.json({ 
-        success: true, 
-        action: "created",
-        message: "Progreso iniciado"
-      });
     }
+
+    res.json({ success: true, message: "Progreso actualizado correctamente" });
   } catch (error) {
     console.error("Error actualizando progreso:", error);
-    res.status(500).json({ 
-      success: false, 
-      error: "Error actualizando progreso del curso" 
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Obtener progreso del curso para un usuario
+
 router.get("/courses/:courseId/progress/:userId", async (req, res) => {
   const { courseId, userId } = req.params;
   try {
