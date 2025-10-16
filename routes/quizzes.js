@@ -22,7 +22,7 @@ router.post("/modules/:moduleId/quizzes", async (req, res) => {
   }
 });
 
-// 🆕 RUTA ACTUALIZADA: Generar prueba con IA (recibe contexto desde frontend)
+// Generar prueba con IA
 router.post("/modules/quizzes/ai", async (req, res) => {
   const { contexto, num_preguntas, nivel_dificultad } = req.body;
 
@@ -171,6 +171,27 @@ router.get("/modules/:moduleId/quizzes", async (req, res) => {
   }
 });
 
+// Actualizar prueba final
+router.put("/modules/:moduleId/quizzes/:quizId", async (req, res) => {
+  const { quizId } = req.params;
+  const { nota_minima, preguntas } = req.body;
+  
+  try {
+    const preguntasToStore =
+      typeof preguntas === "string" ? preguntas : JSON.stringify(preguntas);
+      
+    await db.execute(
+      "UPDATE pruebas_modulo SET nota_minima = ?, preguntas = ? WHERE id = ?",
+      [nota_minima, preguntasToStore, quizId]
+    );
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error actualizando prueba:", error);
+    res.status(500).json({ error: "Error actualizando prueba" });
+  }
+});
+
 // Calcular nota de intento
 async function calcularNota(respuestas, quizId) {
   const totalPreguntas = respuestas.length;
@@ -208,12 +229,13 @@ async function calcularNota(respuestas, quizId) {
   return (correctas / totalPreguntas) * 10;
 }
 
-// Registrar intento de prueba
+// 🆕 Registrar intento de prueba (actualizado)
 router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
   const { moduleId, quizId } = req.params;
   const { userId, respuestas } = req.body;
 
   try {
+    // Obtener nota previa más alta
     const resultPrev = await db.execute(
       "SELECT nota FROM intentos_prueba WHERE id_prueba = ? AND id_usuario = ? ORDER BY nota DESC LIMIT 1",
       [quizId, userId]
@@ -221,8 +243,10 @@ router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
     const prevRows = resultPrev.rows || resultPrev[0] || [];
     const notaPrevia = prevRows[0]?.nota || null;
 
+    // Calcular nota del intento actual
     const nota = await calcularNota(respuestas, quizId);
 
+    // Obtener nota mínima para aprobar
     const resultMin = await db.execute(
       "SELECT nota_minima FROM pruebas_modulo WHERE id = ?",
       [quizId]
@@ -232,6 +256,7 @@ router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
 
     const aprobado = nota >= notaMinima;
 
+    // Registrar el intento
     await db.execute(
       "INSERT INTO intentos_prueba (id_prueba, id_usuario, nota, aprobado) VALUES (?, ?, ?, ?)",
       [quizId, userId, nota, aprobado]
@@ -244,7 +269,7 @@ router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
   }
 });
 
-// Obtener intentos de un usuario
+// 🆕 Obtener intentos de un usuario para un quiz específico
 router.get("/modules/:moduleId/quizzes/:quizId/attempts/:userId", async (req, res) => {
   const { quizId, userId } = req.params;
   try {
@@ -256,8 +281,71 @@ router.get("/modules/:moduleId/quizzes/:quizId/attempts/:userId", async (req, re
     const nota_maxima = rows.length > 0 ? rows[0].nota : null;
     res.json({ intentos: rows, nota_maxima });
   } catch (error) {
-    console.error("Error obteniendo intento de prueba:", error);
-    res.status(500).json({ error: "Error obteniendo intento de prueba" });
+    console.error("Error obteniendo intentos de prueba:", error);
+    res.status(500).json({ error: "Error obteniendo intentos de prueba" });
+  }
+});
+
+// 🆕 Actualizar progreso del curso (mejorado)
+router.post("/courses/:courseId/progress", async (req, res) => {
+  const { courseId } = req.params;
+  const { id_usuario, id_modulo_actual, nota_maxima, modulo_anterior } = req.body;
+
+  try {
+    // Verificar si ya existe un registro de progreso para este usuario y curso
+    const checkResult = await db.execute(
+      "SELECT * FROM progreso_modulo WHERE id_curso = ? AND id_usuario = ?",
+      [courseId, id_usuario]
+    );
+    const checkRows = checkResult.rows || checkResult[0] || [];
+    const existingProgress = checkRows[0];
+
+    if (existingProgress) {
+      // Ya existe progreso, actualizar solo si es necesario
+      
+      // Si hay nota_maxima, verificar si es mayor que la existente
+      let shouldUpdateNota = false;
+      let nuevaNota = existingProgress.nota_maxima;
+      
+      if (nota_maxima !== null && nota_maxima !== undefined) {
+        if (existingProgress.nota_maxima === null || nota_maxima > existingProgress.nota_maxima) {
+          shouldUpdateNota = true;
+          nuevaNota = nota_maxima;
+        }
+      }
+
+      // Actualizar módulo actual (avanzar progreso)
+      await db.execute(
+        "UPDATE progreso_modulo SET id_modulo_actual = ?, nota_maxima = ?, updated_at = NOW() WHERE id_curso = ? AND id_usuario = ?",
+        [id_modulo_actual, nuevaNota, courseId, id_usuario]
+      );
+
+      res.json({ 
+        success: true, 
+        action: shouldUpdateNota ? "updated" : "advanced",
+        message: shouldUpdateNota 
+          ? "Progreso y nota actualizados" 
+          : "Módulo actual actualizado"
+      });
+    } else {
+      // No existe progreso, crear nuevo registro
+      await db.execute(
+        "INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima) VALUES (?, ?, ?, ?)",
+        [courseId, id_usuario, id_modulo_actual, nota_maxima]
+      );
+
+      res.json({ 
+        success: true, 
+        action: "created",
+        message: "Progreso iniciado"
+      });
+    }
+  } catch (error) {
+    console.error("Error actualizando progreso:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: "Error actualizando progreso del curso" 
+    });
   }
 });
 
@@ -276,6 +364,5 @@ router.get("/courses/:courseId/progress/:userId", async (req, res) => {
     res.status(500).json({ error: "Error obteniendo progreso" });
   }
 });
-
 
 module.exports = router;
