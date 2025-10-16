@@ -203,10 +203,13 @@ router.post("/upload-module-content/:moduleId", upload.single("file"), async (re
   }
 });
 
+// 🔧 CORRECCIÓN: Este endpoint debe reemplazar el existente en routes/contentCourse.js
+
 router.get("/courses/:courseId/modules/:userId", async (req, res) => {
   const { courseId, userId } = req.params;
 
   try {
+    // Verificar acceso al curso
     const accessCheck = await db.execute(`
       SELECT 1 FROM cursos c
       LEFT JOIN cursos_estudiante ce ON ce.idCurso = c.id AND ce.idUsuario = ?
@@ -217,51 +220,83 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
       return res.status(403).json({ error: "No tienes acceso a este curso" });
     }
 
+    // Obtener todos los módulos del curso ordenados
     const result = await db.execute(
       "SELECT * FROM modulos WHERE id_curso = ? ORDER BY orden ASC",
       [courseId]
     );
+
+    // Verificar rol del usuario
     const userInfo = await db.execute(
       "SELECT rol FROM usuarios WHERE id = ?",
       [userId]
     );
 
-    if (userInfo.rows[0].rol === "estudiante") {
-      const progresoActual = await db.execute(
-        "SELECT * FROM progreso_modulo WHERE id_curso = ? AND id_usuario = ?",
-        [courseId, userId]
-      );
-
-      const progreso = progresoActual.rows[0];
-      const modulos = result.rows;
-
-      // Determinar qué módulos están desbloqueados
-      let idModuloActual = null;
-      if (progreso) {
-        idModuloActual = progreso.id_modulo_actual;
-      } else {
-        // Si no hay progreso, el primer módulo es el actual
-        const primerModulo = modulos.find(m => m.orden === 1);
-        idModuloActual = primerModulo ? primerModulo.id : null;
-      }
-
-      // Encontrar el orden del módulo actual
-      const moduloActual = modulos.find(m => m.id === idModuloActual);
-      const ordenModuloActual = moduloActual ? moduloActual.orden : 0;
-
-      // Marcar módulos como bloqueados o desbloqueados
-      const modulosConEstado = modulos.map(modulo => ({
-        ...modulo,
-        desbloqueado: modulo.orden <= ordenModuloActual
-      }));
-
-      return res.json({
-        result: modulosConEstado,
-        progresoActual: progreso || { id_modulo_actual: idModuloActual }
-      });
+    if (userInfo.rows.length === 0) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    return res.json(result.rows);
+    const userRole = userInfo.rows[0].rol;
+
+    // Si es profesor, devolver todos los módulos sin restricciones
+    if (userRole === "profesor") {
+      return res.json(result.rows);
+    }
+
+    // Si es estudiante, manejar progreso
+    const modulos = result.rows;
+
+    // Obtener progreso actual
+    const progresoResult = await db.execute(
+      "SELECT * FROM progreso_modulo WHERE id_curso = ? AND id_usuario = ?",
+      [courseId, userId]
+    );
+
+    let progreso = progresoResult.rows[0] || null;
+    let idModuloActual = null;
+
+    // Determinar módulo actual
+    if (progreso) {
+      idModuloActual = progreso.id_modulo_actual;
+    } else if (modulos.length > 0) {
+      // Si no hay progreso, inicializar con el primer módulo
+      const primerModulo = modulos.find(m => m.orden === 1) || modulos[0];
+      idModuloActual = primerModulo.id;
+
+      // Crear registro de progreso inicial
+      try {
+        await db.execute(
+          "INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual) VALUES (?, ?, ?)",
+          [courseId, userId, idModuloActual]
+        );
+        
+        // Actualizar progreso local
+        progreso = {
+          id_modulo_actual: idModuloActual,
+          id_curso: courseId,
+          id_usuario: userId,
+          nota_maxima: null
+        };
+      } catch (err) {
+        console.error("Error creando progreso inicial:", err);
+      }
+    }
+
+    // Encontrar el orden del módulo actual
+    const moduloActual = modulos.find(m => m.id === idModuloActual);
+    const ordenModuloActual = moduloActual ? moduloActual.orden : 1;
+
+    // Marcar módulos como bloqueados o desbloqueados
+    const modulosConEstado = modulos.map(modulo => ({
+      ...modulo,
+      desbloqueado: modulo.orden <= ordenModuloActual
+    }));
+
+    return res.json({
+      result: modulosConEstado,
+      progresoActual: progreso || { id_modulo_actual: idModuloActual }
+    });
+
   } catch (error) {
     console.error("Error al obtener módulos:", error);
     return res.status(500).json({ error: "Error del servidor" });
