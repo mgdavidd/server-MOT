@@ -9,9 +9,12 @@ router.post("/modules/:moduleId/quizzes", async (req, res) => {
     const { nota_minima, preguntas } = req.body;
     try {
         const moduleId = req.params.moduleId;
+        // Evitar double-stringify: si preguntas ya es string (JSON), guardarlo tal cual,
+        // si es array/obj guardarlo como JSON string.
+        const preguntasToStore = typeof preguntas === "string" ? preguntas : JSON.stringify(preguntas);
         await db.execute(
             "INSERT INTO pruebas_modulo (id_modulo, nota_minima, preguntas) VALUES (?, ?, ?)",
-            [moduleId, nota_minima, JSON.stringify(preguntas)]
+            [moduleId, nota_minima, preguntasToStore]
         );
         res.json({ success: true });
     } catch (error) {
@@ -56,7 +59,7 @@ ${contexto}
 
 INSTRUCCIONES:
 - Nivel ${nivel_dificultad}: ${getNivelDescription(nivel_dificultad)}
-- Cada pregunta debe tener entre 3 y 5 opciones
+- Cada pregunta debe tener entre 3 y 5 opciones distintas entre sí (para evitar exámenes repetitivos, siempre a o siempre b)
 - Solo una opción debe ser correcta
 - Las preguntas deben estar directamente relacionadas con el contenido proporcionado
 - Evita preguntas ambiguas o con múltiples respuestas válidas`;
@@ -225,7 +228,31 @@ async function calcularNota(respuestas, quizId) {
         throw new Error("Prueba no encontrada");
     }
 
-    const preguntas = JSON.parse(preguntasData.preguntas);
+    // Parsing robusto: soporta
+    // - campo ya como array (drivers que devuelven objetos)
+    // - string JSON normal: '[...]'
+    // - string doble-escaped: '"[{\\"texto\\":...}]"'
+    let preguntas;
+    try {
+        const raw = preguntasData.preguntas;
+        if (Array.isArray(raw)) {
+            preguntas = raw;
+        } else if (typeof raw === "string") {
+            // primer parse
+            let parsed = JSON.parse(raw);
+            // si queda string, intentar parse de nuevo (doble-escaped)
+            if (typeof parsed === "string") {
+                parsed = JSON.parse(parsed);
+            }
+            preguntas = Array.isArray(parsed) ? parsed : [];
+        } else {
+            preguntas = [];
+        }
+    } catch (err) {
+        console.error("Error parsing preguntas in calcularNota:", err);
+        preguntas = [];
+    }
+
     let respuestasCorrectas = 0;
 
     preguntas.forEach((pregunta, index) => {
@@ -306,9 +333,11 @@ router.put("/modules/:moduleId/quizzes/:quizId", async (req, res) => {
     const { moduleId, quizId } = req.params;
     const { nota_minima, preguntas } = req.body;
     try {
+        // Evitar double-stringify al actualizar
+        const preguntasToStore = typeof preguntas === "string" ? preguntas : JSON.stringify(preguntas);
         await db.execute(
             "UPDATE pruebas_modulo SET nota_minima = ?, preguntas = ? WHERE id = ? AND id_modulo = ?",
-            [nota_minima, JSON.stringify(preguntas), quizId, moduleId]
+            [nota_minima, preguntasToStore, quizId, moduleId]
         );
         res.json({ success: true });
     } catch (error) {
