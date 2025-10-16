@@ -261,4 +261,21 @@ router.get("/modules/:moduleId/quizzes/:quizId/attempts/:userId", async (req, re
   }
 });
 
+// Obtener progreso del curso para un usuario
+router.get("/courses/:courseId/progress/:userId", async (req, res) => {
+  const { courseId, userId } = req.params;
+  try {
+    const result = await db.execute(
+      "SELECT * FROM progreso_modulo WHERE id_curso = ? AND id_usuario = ?",
+      [courseId, userId]
+    );
+    const rows = result.rows || result[0] || [];
+    res.json(rows[0] || {});
+  } catch (error) {
+    console.error("Error obteniendo progreso:", error);
+    res.status(500).json({ error: "Error obteniendo progreso" });
+  }
+});
+
+
 module.exports = router;
