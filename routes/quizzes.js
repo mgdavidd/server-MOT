@@ -229,7 +229,7 @@ async function calcularNota(respuestas, quizId) {
   return (correctas / totalPreguntas) * 10;
 }
 
-// 🆕 Registrar intento de prueba (actualizado)
+// Registrar intento de prueba
 router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
   const { moduleId, quizId } = req.params;
   const { userId, respuestas } = req.body;
@@ -269,7 +269,7 @@ router.post("/modules/:moduleId/quizzes/:quizId/attempts", async (req, res) => {
   }
 });
 
-// 🆕 Obtener intentos de un usuario para un quiz específico
+// Obtener intentos de un usuario para un quiz específico
 router.get("/modules/:moduleId/quizzes/:quizId/attempts/:userId", async (req, res) => {
   const { quizId, userId } = req.params;
   try {
@@ -286,28 +286,69 @@ router.get("/modules/:moduleId/quizzes/:quizId/attempts/:userId", async (req, re
   }
 });
 
-// Actualizar o insertar progreso
+// 🔥 ACTUALIZADO: Actualizar o insertar progreso con lógica mejorada
 router.post("/courses/:courseId/progress", async (req, res) => {
   const { courseId } = req.params;
   const { id_usuario, id_modulo_actual, nota_maxima, modulo_anterior } = req.body;
 
   try {
+    // Obtener todos los módulos del curso ordenados
+    const modulosResult = await db.execute(
+      "SELECT id, orden FROM modulos WHERE id_curso = ? ORDER BY orden ASC",
+      [courseId]
+    );
+    const modulos = modulosResult.rows || modulosResult[0] || [];
+
+    // Encontrar el orden del módulo que se está intentando desbloquear
+    const moduloActualData = modulos.find(m => m.id === id_modulo_actual);
+    const moduloAnteriorData = modulos.find(m => m.id === modulo_anterior);
+
+    if (!moduloActualData) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Módulo actual no encontrado" 
+      });
+    }
+
     // Verificar si ya existe un registro de progreso
     const existing = await db.execute(
       "SELECT * FROM progreso_modulo WHERE id_curso = ? AND id_usuario = ?",
       [courseId, id_usuario]
     );
 
-    if (existing.rows.length > 0) {
-      // Actualizar progreso si el nuevo módulo es posterior al actual
-      const progresoActual = existing.rows[0];
-      if (id_modulo_actual !== progresoActual.id_modulo_actual) {
+    const existingRows = existing.rows || existing[0] || [];
+
+    if (existingRows.length > 0) {
+      const progresoActual = existingRows[0];
+      const moduloActualProgresoData = modulos.find(m => m.id === progresoActual.id_modulo_actual);
+      
+      // 🔥 CAMBIO CRÍTICO: Permitir actualización si:
+      // 1. El nuevo módulo tiene orden mayor o igual al actual
+      // 2. O si estamos verificando que ya aprobó este módulo antes
+      const ordenActualProgreso = moduloActualProgresoData?.orden || 0;
+      const ordenNuevoModulo = moduloActualData.orden || 0;
+      
+      if (ordenNuevoModulo >= ordenActualProgreso) {
+        // Actualizar progreso
         await db.execute(
           `UPDATE progreso_modulo 
            SET id_modulo_actual = ?, nota_maxima = COALESCE(?, nota_maxima) 
            WHERE id_curso = ? AND id_usuario = ?`,
           [id_modulo_actual, nota_maxima, courseId, id_usuario]
         );
+        
+        return res.json({ 
+          success: true, 
+          message: "Progreso actualizado correctamente",
+          updated: true
+        });
+      } else {
+        // El módulo solicitado está antes del progreso actual, no actualizar
+        return res.json({ 
+          success: true, 
+          message: "Progreso ya está más adelante",
+          updated: false
+        });
       }
     } else {
       // Crear nuevo progreso
@@ -316,15 +357,19 @@ router.post("/courses/:courseId/progress", async (req, res) => {
          VALUES (?, ?, ?, ?)`,
         [courseId, id_usuario, id_modulo_actual, nota_maxima]
       );
+      
+      return res.json({ 
+        success: true, 
+        message: "Progreso creado correctamente",
+        updated: true
+      });
     }
 
-    res.json({ success: true, message: "Progreso actualizado correctamente" });
   } catch (error) {
     console.error("Error actualizando progreso:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
 
 router.get("/courses/:courseId/progress/:userId", async (req, res) => {
   const { courseId, userId } = req.params;
