@@ -182,7 +182,7 @@ router.post("/upload-module-content/:moduleId", upload.single("file"), async (re
       fields: "id,webViewLink",
     });
 
-    await db.execute(
+    const result = await db.execute(
       "INSERT INTO contenido (id_modulo, titulo, link) VALUES (?, ?, ?)",
       [moduleId, title, data.webViewLink]
     );
@@ -190,8 +190,10 @@ router.post("/upload-module-content/:moduleId", upload.single("file"), async (re
     fs.unlink(req.file.path, () => { });
     res.json({
       success: true,
+      id: result.lastInsertRowid,
       fileLink: data.webViewLink,
     });
+
 
   } catch (error) {
     console.error("Error subiendo contenido:", error);
@@ -203,7 +205,6 @@ router.post("/upload-module-content/:moduleId", upload.single("file"), async (re
   }
 });
 
-// 🔧 CORRECCIÓN: Este endpoint debe reemplazar el existente en routes/contentCourse.js
 
 router.get("/courses/:courseId/modules/:userId", async (req, res) => {
   const { courseId, userId } = req.params;
@@ -269,7 +270,7 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
           "INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual) VALUES (?, ?, ?)",
           [courseId, userId, idModuloActual]
         );
-        
+
         // Actualizar progreso local
         progreso = {
           id_modulo_actual: idModuloActual,
@@ -327,7 +328,7 @@ router.get("/modules/recordings/:moduleId", async (req, res) => {
          END DESC`,
       [moduleId]
     );
-    
+
     res.json(recordings.rows);
   } catch (error) {
     console.error("Error obteniendo grabaciones:", error);
@@ -402,8 +403,7 @@ router.post("/upload-pre-recording/:moduleId", upload.single("file"), async (req
       fields: "id,webViewLink",
     });
 
-    // Guardar en la tabla grabaciones con idFecha = NULL
-    await db.execute(
+    const result = await db.execute(
       "INSERT INTO grabaciones (idFecha, titulo, link, id_modulo) VALUES (?, ?, ?, ?)",
       [null, title, data.webViewLink, moduleId]
     );
@@ -411,8 +411,10 @@ router.post("/upload-pre-recording/:moduleId", upload.single("file"), async (req
     fs.unlink(req.file.path, () => { });
     res.json({
       success: true,
+      id: result.lastInsertRowid,
       fileLink: data.webViewLink,
     });
+
   } catch (error) {
     console.error("Error subiendo grabación pregrabada:", error);
     res.status(500).json({
@@ -427,7 +429,7 @@ router.put("/content/:contentId", async (req, res) => {
   const { contentId } = req.params
   const { title } = req.body;
   const { authorization } = req.headers
-  if (!title ) {
+  if (!title) {
     return res.status(400).json({ error: "Faltan datos obligatorios" });
   }
 
@@ -458,7 +460,7 @@ router.delete("/content/:contentId", async (req, res) => {
   const { contentId } = req.params;
   const { link } = req.body;
   const { authorization } = req.headers;
-  
+
   try {
     // Primero verificar permisos
     if (authorization) {
@@ -488,7 +490,7 @@ router.delete("/content/:contentId", async (req, res) => {
 
       // Eliminar de la base de datos
       await db.execute("DELETE FROM contenido WHERE id = ?", [contentId]);
-      
+
       // Eliminar de Drive si hay link
       if (link && link.includes("/d/")) {
         try {
@@ -509,7 +511,7 @@ router.delete("/content/:contentId", async (req, res) => {
 
   } catch (error) {
     console.error("Error eliminando contenido:", error);
-    
+
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({ error: "Token inválido" });
     }
@@ -573,7 +575,7 @@ router.delete("/recordings/:recordingId", async (req, res) => {
 
   } catch (error) {
     console.error("Error eliminando grabación:", error);
-    
+
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({ error: "Token inválido" });
     }
