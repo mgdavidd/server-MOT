@@ -190,7 +190,7 @@ router.post("/upload-module-content/:moduleId", upload.single("file"), async (re
     fs.unlink(req.file.path, () => { });
     res.json({
       success: true,
-      id: result.lastInsertRowid,
+      id: result.lastInsertRowid,  // Siempre usar lastInsertRowid para @libsql/client
       fileLink: data.webViewLink,
     });
 
