@@ -3,7 +3,7 @@ const router = express.Router();
 const fs = require("fs");
 const path = require("path");
 const db = require("../db");
-const { upload, uploadDir } = require("../uploadConfig");
+const { upload } = require("../uploadConfig");
 const { DateTime } = require("luxon");
 const { getAdminDriveClient } = require("../driveUtils");
 const { google } = require("googleapis");
@@ -220,8 +220,98 @@ router.post("/upload-pre-recording/:moduleId", upload.single("file"), async (req
 });
 
 /* ============================================================
-   ✏️ ACTUALIZAR CONTENIDO
+   📄 RUTAS DE CONTENIDO Y GRABACIONES (RESTABLECIDAS)
 ============================================================ */
+
+// Obtener contenido del módulo
+router.get("/modules/content/:moduleId", async (req, res) => {
+  const { moduleId } = req.params;
+  try {
+    const result = await db.execute(
+      "SELECT * FROM contenido WHERE id_modulo = ? ORDER BY id ASC",
+      [moduleId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error obteniendo contenido:", error);
+    res.status(500).json({ error: "Error al obtener contenido" });
+  }
+});
+
+// Obtener grabaciones del módulo
+router.get("/modules/recordings/:moduleId", async (req, res) => {
+  const { moduleId } = req.params;
+  try {
+    const recordings = await db.execute(
+      `SELECT g.id, g.titulo, g.link, f.inicio,
+       CASE WHEN g.idFecha IS NULL THEN 'pregrabado' ELSE 'sesion' END as tipo_grabacion
+       FROM grabaciones g
+       LEFT JOIN fechas f ON g.idFecha = f.id
+       WHERE g.id_modulo = ?
+       ORDER BY CASE WHEN f.inicio IS NOT NULL THEN f.inicio ELSE g.id END DESC`,
+      [moduleId]
+    );
+    res.json(recordings.rows);
+  } catch (error) {
+    console.error("Error obteniendo grabaciones:", error);
+    res.status(500).json({ error: "Error al obtener grabaciones" });
+  }
+});
+
+// Crear contenido manualmente (sin archivo)
+router.post("/modules/:moduleId/content", async (req, res) => {
+  const { moduleId } = req.params;
+  const { titulo, link } = req.body;
+  if (!titulo || !link) return res.status(400).json({ error: "Faltan datos" });
+
+  try {
+    await db.execute("INSERT INTO contenido (id_modulo, titulo, link) VALUES (?, ?, ?)", [
+      moduleId,
+      titulo,
+      link,
+    ]);
+    res.json({ success: true, message: "Contenido creado correctamente" });
+  } catch (error) {
+    console.error("Error creando contenido:", error);
+    res.status(500).json({ error: "Error al crear contenido" });
+  }
+});
+
+/* ============================================================
+   📦 RUTA PARA OBTENER MÓDULOS CON CONTROL DE ACCESO
+============================================================ */
+router.get("/courses/:courseId/modules/:userId", async (req, res) => {
+  const { courseId, userId } = req.params;
+
+  try {
+    const accessCheck = await db.execute(
+      `SELECT 1 FROM cursos c
+       LEFT JOIN cursos_estudiante ce ON ce.idCurso = c.id AND ce.idUsuario = ?
+       WHERE c.id = ? AND (c.admin = ? OR ce.idUsuario IS NOT NULL)`,
+      [userId, courseId, userId]
+    );
+
+    if (accessCheck.rows.length === 0) {
+      return res.status(403).json({ error: "No tienes acceso a este curso" });
+    }
+
+    const result = await db.execute(
+      "SELECT * FROM modulos WHERE id_curso = ? ORDER BY orden ASC",
+      [courseId]
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error obteniendo módulos:", error);
+    res.status(500).json({ error: "Error al obtener módulos" });
+  }
+});
+
+/* ============================================================
+   ✏️ ACTUALIZAR Y ELIMINAR CONTENIDO / GRABACIONES / MÓDULOS
+============================================================ */
+
+// Actualizar contenido
 router.put("/content/:contentId", async (req, res) => {
   const { contentId } = req.params;
   const { title } = req.body;
@@ -242,14 +332,12 @@ router.put("/content/:contentId", async (req, res) => {
         [contentId]
       );
 
-      if (contentInfo.rows.length === 0) {
+      if (contentInfo.rows.length === 0)
         return res.status(404).json({ error: "Contenido no encontrado" });
-      }
 
       const adminId = contentInfo.rows[0].admin;
-      if (decoded.id !== adminId) {
+      if (decoded.id !== adminId)
         return res.status(403).json({ error: "No tienes permiso para editar este contenido" });
-      }
     }
 
     await db.execute("UPDATE contenido SET titulo = ? WHERE id = ?", [title, contentId]);
@@ -260,9 +348,7 @@ router.put("/content/:contentId", async (req, res) => {
   }
 });
 
-/* ============================================================
-   ❌ ELIMINAR CONTENIDO / GRABACIONES / MÓDULOS
-============================================================ */
+// Eliminar contenido
 router.delete("/content/:contentId", async (req, res) => {
   const { contentId } = req.params;
   const { link } = req.body;
@@ -292,7 +378,6 @@ router.delete("/content/:contentId", async (req, res) => {
 
     await db.execute("DELETE FROM contenido WHERE id = ?", [contentId]);
 
-    // Eliminar archivo de Drive si aplica
     if (link && link.includes("/d/")) {
       try {
         const { auth } = await getAdminDriveClient(contentData.admin_nombre);
@@ -311,6 +396,7 @@ router.delete("/content/:contentId", async (req, res) => {
   }
 });
 
+// Eliminar grabación
 router.delete("/recordings/:recordingId", async (req, res) => {
   const { recordingId } = req.params;
   const { link } = req.body;
@@ -358,6 +444,7 @@ router.delete("/recordings/:recordingId", async (req, res) => {
   }
 });
 
+// Eliminar módulo
 router.delete("/modules/:moduleId", async (req, res) => {
   const { moduleId } = req.params;
   const authHeader = req.headers.authorization;
