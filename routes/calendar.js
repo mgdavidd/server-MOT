@@ -10,6 +10,79 @@ const { DateTime } = require("luxon");
 const roomCache = new Map();
 const CACHE_TTL = 60 * 1000; // 1 minuto
 
+// 🔹 Rate limiting para evitar 429
+const requestQueue = [];
+let isProcessingQueue = false;
+const MIN_REQUEST_INTERVAL = 2000; // 2 segundos entre requests
+let lastRequestTime = 0;
+
+// 🔹 Función de retry con backoff exponencial
+async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 1000) {
+  let lastError;
+  
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      
+      // Si es 429, esperamos más tiempo
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.headers['retry-after'];
+        const delay = retryAfter 
+          ? parseInt(retryAfter) * 1000 
+          : initialDelay * Math.pow(2, i);
+        
+        console.log(`Rate limited. Reintentando en ${delay}ms (intento ${i + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        // Si no es 429, no reintentar
+        throw error;
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
+// 🔹 Cola de requests para evitar spam
+async function queueRequest(fn) {
+  return new Promise((resolve, reject) => {
+    requestQueue.push({ fn, resolve, reject });
+    processQueue();
+  });
+}
+
+async function processQueue() {
+  if (isProcessingQueue || requestQueue.length === 0) return;
+  
+  isProcessingQueue = true;
+  
+  while (requestQueue.length > 0) {
+    const now = Date.now();
+    const timeSinceLastRequest = now - lastRequestTime;
+    
+    // Esperar si no ha pasado suficiente tiempo
+    if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+      await new Promise(resolve => 
+        setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest)
+      );
+    }
+    
+    const { fn, resolve, reject } = requestQueue.shift();
+    lastRequestTime = Date.now();
+    
+    try {
+      const result = await retryWithBackoff(fn);
+      resolve(result);
+    } catch (error) {
+      reject(error);
+    }
+  }
+  
+  isProcessingQueue = false;
+}
+
 async function validateUserCourseAccess(userId, courseId) {
   try {
     const result = await db.execute(
@@ -61,7 +134,7 @@ router.get("/courses/:selectedCourseId/dates", async (req, res) => {
     const fechasFormateadas = fechas.rows.map((fecha) => ({
       ...fecha,
       join_link: fecha.room_id
-        ? `/courses/${selectedCourseId}/join/${fecha.room_id}` // 🔹 proxy seguro
+        ? `/courses/${selectedCourseId}/join/${fecha.room_id}`
         : null,
     }));
 
@@ -131,7 +204,7 @@ router.get("/courses/:courseId/join/:roomId", async (req, res) => {
 });
 
 // ================================
-// 📌 Crear/actualizar fechas
+// 📌 Crear/actualizar fechas (CON BORRADO Y RATE LIMITING)
 // ================================
 router.post("/courses/:selectedCourseId/dates", async (req, res) => {
   const { sessions = [] } = req.body;
@@ -168,18 +241,56 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
       return startUTC.isValid && endUTC.isValid && endUTC > startUTC;
     });
 
-    // 🔹 Mandamos todas las sesiones en un solo request al servidor de videollamadas
-    const { VIDEOCHAT_URL } = process.env;
-    const { data } = await axios.post(
-      `${VIDEOCHAT_URL}/api/calls`,
-      {
-        course_id: selectedCourseId,
-        sessions: validSessions,
-      },
-      { headers: { Authorization: `Bearer ${jwt.sign({ course_id: selectedCourseId }, JWT_SECRET)}` } }
+    if (validSessions.length === 0) {
+      // 🔹 Si no hay sesiones válidas, borrar todas las fechas futuras del curso
+      const ahora = DateTime.utc().toISO();
+      await db.execute(
+        `DELETE FROM fechas WHERE idCurso = ? AND inicio >= ?`,
+        [selectedCourseId, ahora]
+      );
+      return res.json({ results: [], message: "Todas las fechas futuras fueron eliminadas" });
+    }
+
+    // 🔹 PASO 1: Borrar fechas futuras que ya no están en la nueva selección
+    const ahora = DateTime.utc().toISO();
+    const nuevasFechasLocales = validSessions.map((s) => {
+      return DateTime.fromISO(s.inicio, { zone: s.timezone || "America/Bogota" }).toISODate();
+    });
+
+    // Obtener fechas actuales del curso
+    const fechasActuales = await db.execute(
+      `SELECT id, fecha_date FROM fechas WHERE idCurso = ? AND inicio >= ?`,
+      [selectedCourseId, ahora]
     );
 
-    // 🔹 Guardamos en DB todas las salas recibidas
+    // Identificar y borrar fechas que ya no están seleccionadas
+    for (const fecha of fechasActuales.rows) {
+      if (!nuevasFechasLocales.includes(fecha.fecha_date)) {
+        console.log(`Borrando fecha ${fecha.fecha_date} del curso ${selectedCourseId}`);
+        await db.execute(`DELETE FROM fechas WHERE id = ?`, [fecha.id]);
+      }
+    }
+
+    // 🔹 PASO 2: Request con rate limiting y retry al servidor de videollamadas
+    const { VIDEOCHAT_URL } = process.env;
+    
+    const { data } = await queueRequest(async () => {
+      return await axios.post(
+        `${VIDEOCHAT_URL}/api/calls`,
+        {
+          course_id: selectedCourseId,
+          sessions: validSessions,
+        },
+        { 
+          headers: { 
+            Authorization: `Bearer ${jwt.sign({ course_id: selectedCourseId }, JWT_SECRET)}` 
+          },
+          timeout: 30000 // 30 segundos timeout
+        }
+      );
+    });
+
+    // 🔹 PASO 3: Guardar/actualizar las nuevas fechas en DB
     for (const session of data.results) {
       const { inicio, final, titulo, type, timezone, room_id, link } = session;
       const startUTC = DateTime.fromISO(inicio, { zone: timezone }).toUTC();
@@ -203,7 +314,7 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
           type,
           selectedCourseId,
           titulo,
-          link, // 🔹 guardamos link real del videochat
+          link,
           localDate,
           room_id,
         ]
@@ -213,7 +324,23 @@ router.post("/courses/:selectedCourseId/dates", async (req, res) => {
     return res.json({ results: data.results });
   } catch (err) {
     console.error("Error crítico:", err);
-    return res.status(500).json({ error: "Error al procesar solicitud" });
+    
+    // 🔹 Manejo específico de errores
+    if (err.response?.status === 429) {
+      return res.status(429).json({ 
+        error: "Demasiadas solicitudes. Por favor espera un momento e intenta de nuevo.",
+        retryAfter: err.response.headers['retry-after'] || 60
+      });
+    }
+    
+    if (err.code === 'ECONNABORTED') {
+      return res.status(504).json({ error: "Tiempo de espera agotado" });
+    }
+    
+    return res.status(500).json({ 
+      error: "Error al procesar solicitud",
+      details: err.message 
+    });
   }
 });
 
