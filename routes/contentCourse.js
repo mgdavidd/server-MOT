@@ -114,26 +114,53 @@ router.post("/modules/course/:courseId", async (req, res) => {
   const { title, color } = req.body;
 
   try {
+    await db.execute("BEGIN");
+
+    // Obtener orden del nuevo módulo
     const getMaxOrden = await db.execute(
       "SELECT MAX(orden) as maxOrden FROM modulos WHERE id_curso = ?",
       [courseId]
     );
     const nuevoOrden = (getMaxOrden.rows[0]?.maxOrden || 0) + 1;
 
-    await db.execute(
-      "INSERT INTO modulos (id_curso, nombre, color, orden) VALUES (?, ?, ?, ?)",
+    // Insertar nuevo módulo
+    const moduleResult = await db.execute(
+      "INSERT INTO modulos (id_curso, nombre, color, orden) VALUES (?, ?, ?, ?) RETURNING id",
       [courseId, title, color, nuevoOrden]
     );
-    res.json({ success: true, message: "Módulo creado correctamente" });
+    const newModuleId = moduleResult.rows[0].id;
+
+    // Si es el primer módulo, actualizar progreso de todos los estudiantes inscritos
+    if (nuevoOrden === 1) {
+      await db.execute(
+        `INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima)
+         SELECT ?, idUsuario, ?, 0
+         FROM cursos_estudiante ce
+         WHERE ce.idCurso = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM progreso_modulo pm 
+           WHERE pm.id_curso = ce.idCurso 
+           AND pm.id_usuario = ce.idUsuario
+         )`,
+        [courseId, newModuleId, courseId]
+      );
+    }
+
+    await db.execute("COMMIT");
+    
+    res.json({ 
+      success: true, 
+      message: "Módulo creado correctamente",
+      moduleId: newModuleId
+    });
+
   } catch (error) {
+    await db.execute("ROLLBACK");
     console.error("Error creando módulo:", error);
     res.status(500).json({ success: false, error: "Error al crear módulo" });
   }
 });
 
-/* ============================================================
-   📤 SUBIR CONTENIDO DE MÓDULO
-============================================================ */
 router.post("/upload-module-content/:moduleId", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) throw new Error("Archivo no recibido");
@@ -450,29 +477,92 @@ router.delete("/modules/:moduleId", async (req, res) => {
   const authHeader = req.headers.authorization;
 
   try {
+    // Iniciar transacción
+    await db.execute("BEGIN");
+
     const moduleInfo = await db.execute(
-      `SELECT c.admin FROM modulos m
+      `SELECT m.id, m.id_curso, m.orden, c.admin 
+       FROM modulos m
        JOIN cursos c ON m.id_curso = c.id
        WHERE m.id = ?`,
       [moduleId]
     );
 
-    if (moduleInfo.rows.length === 0)
+    if (moduleInfo.rows.length === 0) {
+      await db.execute("ROLLBACK");
       return res.status(404).json({ error: "Módulo no encontrado" });
+    }
 
     const moduleData = moduleInfo.rows[0];
+
+    // Verificar autorización
     if (authHeader) {
       const token = authHeader.split(" ")[1];
       const decoded = jwt.verify(token, JWT_SECRET);
-      if (decoded.id !== moduleData.admin)
+      if (decoded.id !== moduleData.admin) {
+        await db.execute("ROLLBACK");
         return res.status(403).json({ error: "No tienes permiso para eliminar este módulo" });
+      }
     }
 
+    // 1. Obtener módulos anterior y siguiente
+    const [prevModule, nextModule] = await Promise.all([
+      db.execute(
+        "SELECT id FROM modulos WHERE id_curso = ? AND orden < ? ORDER BY orden DESC LIMIT 1",
+        [moduleData.id_curso, moduleData.orden]
+      ),
+      db.execute(
+        "SELECT id FROM modulos WHERE id_curso = ? AND orden > ? ORDER BY orden ASC LIMIT 1",
+        [moduleData.id_curso, moduleData.orden]
+      )
+    ]);
+
+    // 2. Determinar el módulo al que moveremos a los estudiantes
+    const newModuleId = prevModule.rows[0]?.id || nextModule.rows[0]?.id;
+
+    // 3. Si hay un módulo destino, actualizar el progreso de los estudiantes
+    if (newModuleId) {
+      await db.execute(
+        `UPDATE progreso_modulo 
+         SET id_modulo_actual = ?
+         WHERE id_curso = ? AND id_modulo_actual = ?`,
+        [newModuleId, moduleData.id_curso, moduleId]
+      );
+    }
+
+    // 4. Eliminar pruebas, contenido y grabaciones del módulo
+    await Promise.all([
+      db.execute("DELETE FROM pruebas_modulo WHERE id_modulo = ?", [moduleId]),
+      db.execute("DELETE FROM contenido WHERE id_modulo = ?", [moduleId]),
+      db.execute("DELETE FROM grabaciones WHERE id_modulo = ?", [moduleId])
+    ]);
+
+    // 5. Eliminar el módulo
     await db.execute("DELETE FROM modulos WHERE id = ?", [moduleId]);
-    res.json({ success: true, message: "Módulo eliminado exitosamente" });
+
+    // 6. Reordenar los módulos restantes
+    await db.execute(
+      `UPDATE modulos 
+       SET orden = orden - 1 
+       WHERE id_curso = ? AND orden > ?`,
+      [moduleData.id_curso, moduleData.orden]
+    );
+
+    await db.execute("COMMIT");
+
+    res.json({ 
+      success: true, 
+      message: "Módulo eliminado exitosamente",
+      newModuleId 
+    });
+
   } catch (error) {
+    await db.execute("ROLLBACK");
     console.error("Error eliminando módulo:", error);
-    res.status(500).json({ error: "Error al eliminar módulo", details: error.message });
+    res.status(500).json({ 
+      error: "Error al eliminar módulo", 
+      details: error.message 
+    });
   }
 });
 
