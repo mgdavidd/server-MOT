@@ -311,8 +311,9 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
   const { courseId, userId } = req.params;
 
   try {
+    // Verificar que el usuario tenga acceso al curso (inscrito o admin)
     const accessCheck = await db.execute(
-      `SELECT 1 FROM cursos c
+      `SELECT c.admin FROM cursos c
        LEFT JOIN cursos_estudiante ce ON ce.idCurso = c.id AND ce.idUsuario = ?
        WHERE c.id = ? AND (c.admin = ? OR ce.idUsuario IS NOT NULL)`,
       [userId, courseId, userId]
@@ -322,12 +323,61 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
       return res.status(403).json({ error: "No tienes acceso a este curso" });
     }
 
+    const courseAdmin = accessCheck.rows[0].admin;
+
+    // Obtener progreso del usuario (si existe)
+    const progresoRes = await db.execute(
+      `SELECT id_modulo_actual FROM progreso_modulo
+       WHERE id_curso = ? AND id_usuario = ? LIMIT 1`,
+      [courseId, userId]
+    );
+    const idModuloActualRaw = progresoRes.rows[0]?.id_modulo_actual;
+    const idModuloActual = idModuloActualRaw !== undefined && idModuloActualRaw !== null
+      ? Number(idModuloActualRaw)
+      : null;
+
+    // Obtener orden actual (si hay progreso)
+    let ordenActual = null;
+    if (idModuloActual) {
+      const ordenRes = await db.execute("SELECT orden FROM modulos WHERE id = ? AND id_curso = ?", [idModuloActual, courseId]);
+      if (ordenRes.rows.length > 0) ordenActual = Number(ordenRes.rows[0].orden);
+    }
+
+    // Obtener todos los módulos del curso
     const result = await db.execute(
       "SELECT * FROM modulos WHERE id_curso = ? ORDER BY orden ASC",
       [courseId]
     );
 
-    res.json(result.rows);
+    // Normalizar y añadir flags de acceso
+    const modules = result.rows.map((m) => {
+      const mod = {
+        id: m.id !== undefined ? Number(m.id) : null,
+        id_curso: m.id_curso !== undefined ? Number(m.id_curso) : null,
+        nombre: m.nombre,
+        color: m.color,
+        orden: m.orden !== undefined ? Number(m.orden) : null,
+        descripcion: m.descripcion || null,
+        // flags
+        isCurrent: idModuloActual === (m.id !== undefined ? Number(m.id) : null),
+        accessible: false
+      };
+
+      // Si es admin del curso -> acceso total
+      if (Number(courseAdmin) === Number(userId)) {
+        mod.accessible = true;
+      } else if (ordenActual !== null) {
+        // Accesible si su orden es <= ordenActual
+        mod.accessible = (mod.orden !== null && mod.orden <= ordenActual);
+      } else {
+        // Si no existe progreso, bloquear por defecto (frontend puede pedir crear progreso al inscribirse)
+        mod.accessible = false;
+      }
+
+      return mod;
+    });
+
+    res.json(modules);
   } catch (error) {
     console.error("Error obteniendo módulos:", error);
     res.status(500).json({ error: "Error al obtener módulos" });
