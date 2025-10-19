@@ -280,34 +280,46 @@ router.post("/inscription/course", async (req, res) => {
       [courseId]
     );
 
-    // Iniciar transacción
-    await db.execute("BEGIN");
+    let transactionStarted = false;
+    try {
+      // Iniciar transacción
+      await db.execute("BEGIN");
+      transactionStarted = true;
 
-    // Inscribir al estudiante
-    await db.execute(
-      "INSERT INTO cursos_estudiante (idUsuario, idCurso) VALUES (?, ?)",
-      [userId, courseId]
-    );
-
-    // Crear progreso inicial
-    if (firstModule.rows.length > 0) {
+      // Inscribir al estudiante
       await db.execute(
-        `INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima)
-         VALUES (?, ?, ?, ?)`,
-        [courseId, userId, firstModule.rows[0].id, 0]
+        "INSERT INTO cursos_estudiante (idUsuario, idCurso) VALUES (?, ?)",
+        [userId, courseId]
       );
-    }
 
-    await db.execute("COMMIT");
+      // Crear progreso inicial
+      if (firstModule.rows.length > 0) {
+        await db.execute(
+          `INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima)
+           VALUES (?, ?, ?, ?)`,
+          [courseId, userId, firstModule.rows[0].id, 0]
+        );
+      }
+
+      await db.execute("COMMIT");
+    } catch (txError) {
+      if (transactionStarted) {
+        try {
+          await db.execute("ROLLBACK");
+        } catch (rbError) {
+          console.warn("Rollback falló o no había transacción activa:", rbError.message);
+        }
+      }
+      throw txError;
+    }
 
     res.status(200).json({ 
       success: true, 
       message: "Inscripción exitosa",
-      firstModuleId: firstModule.rows[0]?.id || null
+      firstModuleId: firstModule.rows[0]?.id !== undefined ? Number(firstModule.rows[0].id) : null
     });
 
   } catch (error) {
-    await db.execute("ROLLBACK");
     console.error("Error al inscribir al curso:", error);
     res.status(500).json({ error: "Error del servidor" });
   }
