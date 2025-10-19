@@ -2,6 +2,19 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
+// utilidad local para evitar errores de BigInt al serializar JSON
+function normalizeRow(row = {}) {
+  const out = {};
+  for (const k in row) {
+    const v = row[k];
+    out[k] = typeof v === "bigint" ? v.toString() : v;
+  }
+  return out;
+}
+function normalizeRows(rows = []) {
+  return rows.map(normalizeRow);
+}
+
 // Listar foros de un módulo con información de referencia y conteo de respuestas
 router.get("/modulos/:idModulo/foros", async (req, res) => {
   try {
@@ -34,7 +47,7 @@ router.get("/modulos/:idModulo/foros", async (req, res) => {
       [idModulo]
     );
     
-    res.json(result.rows);
+    res.json(normalizeRows(result.rows));
   } catch (error) {
     console.error("Error cargando foros:", error);
     res.status(500).json({ error: "Error del servidor al cargar foros" });
@@ -66,10 +79,12 @@ router.post("/foros", async (req, res) => {
       [idModulo, idUsuario, finalTipoReferencia, finalIdReferencia, tipoForo, titulo.trim(), mensaje.trim()]
     );
 
+    const foroId = result.rows[0]?.id !== undefined ? String(result.rows[0].id) : null;
+
     res.status(201).json({ 
       success: true, 
       message: "Foro creado exitosamente",
-      foroId: result.rows[0].id 
+      foroId
     });
   } catch (error) {
     console.error("Error creando foro:", error);
@@ -123,8 +138,8 @@ router.get("/foros/:idForo", async (req, res) => {
     );
 
     const foro = {
-      ...foroResult.rows[0],
-      respuestas: respuestasResult.rows
+      ...normalizeRow(foroResult.rows[0]),
+      respuestas: normalizeRows(respuestasResult.rows)
     };
 
     res.json(foro);
@@ -162,40 +177,30 @@ router.get("/foros-recientes/:limite?", async (req, res) => {
       [limite]
     );
     
-    res.json(result.rows);
+    res.json(normalizeRows(result.rows));
   } catch (error) {
     console.error("Error cargando foros recientes:", error);
     res.status(500).json({ error: "Error del servidor al cargar foros recientes" });
   }
 });
 
-// Eliminar un foro (con transacción para integridad)
 router.delete("/foros/:idForo", async (req, res) => {
   try {
     const { idForo } = req.params;
     
-    // Usar transacción para asegurar consistencia
-    await db.execute("BEGIN");
-    
-    try {
-      // Eliminar respuestas asociadas
-      await db.execute("DELETE FROM respuestasForo WHERE idForo = ?", [idForo]);
-      
-      // Eliminar el foro
-      const deleteResult = await db.execute("DELETE FROM foros WHERE id = ? RETURNING id", [idForo]);
-      
-      if (deleteResult.rows.length === 0) {
-        await db.execute("ROLLBACK");
-        return res.status(404).json({ error: "Foro no encontrado" });
-      }
-      
-      await db.execute("COMMIT");
-      res.json({ success: true, message: "Foro y respuestas eliminados correctamente" });
-      
-    } catch (error) {
-      await db.execute("ROLLBACK");
-      throw error;
+    const operations = [
+      { sql: "DELETE FROM respuestasForo WHERE idForo = ?", args: [idForo] },
+      { sql: "DELETE FROM foros WHERE id = ? RETURNING id", args: [idForo] }
+    ];
+
+    const results = await db.batch(operations);
+
+    const deleteForoResult = results[1];
+    if (!deleteForoResult || (deleteForoResult.rows || []).length === 0) {
+      return res.status(404).json({ error: "Foro no encontrado" });
     }
+
+    res.json({ success: true, message: "Foro y respuestas eliminados correctamente" });
   } catch (error) {
     console.error("Error eliminando foro:", error);
     res.status(500).json({ error: "Error del servidor al eliminar foro" });
@@ -229,19 +234,19 @@ router.post("/foros/:idForo/respuestas", async (req, res) => {
       [idForo, idUsuario, mensaje.trim()]
     );
     
-    // Obtener la respuesta creada con información del autor
+    const nuevaId = result.rows[0]?.id;
     const nuevaRespuesta = await db.execute(
       `SELECT r.*, u.nombre AS autor, u.fotoPerfil
        FROM respuestasForo r
        JOIN usuarios u ON u.id = r.idUsuario
        WHERE r.id = ?`,
-      [result.rows[0].id]
+      [nuevaId]
     );
     
     res.status(201).json({ 
       success: true, 
       message: "Respuesta creada exitosamente",
-      respuesta: nuevaRespuesta.rows[0]
+      respuesta: normalizeRow(nuevaRespuesta.rows[0])
     });
   } catch (error) {
     console.error("Error creando respuesta:", error);
@@ -263,7 +268,7 @@ router.get("/foros/:idForo/respuestas", async (req, res) => {
       [idForo]
     );
     
-    res.json(respuestas.rows);
+    res.json(normalizeRows(respuestas.rows));
   } catch (error) {
     console.error("Error obteniendo respuestas:", error);
     res.status(500).json({ error: "Error del servidor al obtener respuestas" });
@@ -308,7 +313,7 @@ router.get("/modulos/:idModulo/foros/stats", async (req, res) => {
       [idModulo]
     );
     
-    res.json(stats.rows);
+    res.json(normalizeRows(stats.rows));
   } catch (error) {
     console.error("Error obteniendo estadísticas:", error);
     res.status(500).json({ error: "Error del servidor al obtener estadísticas" });

@@ -114,8 +114,6 @@ router.post("/modules/course/:courseId", async (req, res) => {
   const { title, color } = req.body;
 
   try {
-    await db.execute("BEGIN");
-
     // Obtener orden del nuevo módulo
     const getMaxOrden = await db.execute(
       "SELECT MAX(orden) as maxOrden FROM modulos WHERE id_curso = ?",
@@ -123,14 +121,19 @@ router.post("/modules/course/:courseId", async (req, res) => {
     );
     const nuevoOrden = (getMaxOrden.rows[0]?.maxOrden || 0) + 1;
 
-    // Insertar nuevo módulo
-    const moduleResult = await db.execute(
-      "INSERT INTO modulos (id_curso, nombre, color, orden) VALUES (?, ?, ?, ?) RETURNING id",
-      [courseId, title, color, nuevoOrden]
-    );
-    const newModuleId = moduleResult.rows[0].id;
+    // Preparar las operaciones para el batch
+    const operations = [
+      {
+        sql: "INSERT INTO modulos (id_curso, nombre, color, orden) VALUES (?, ?, ?, ?) RETURNING id",
+        args: [courseId, title, color, nuevoOrden]
+      }
+    ];
 
-    // Si es el primer módulo, actualizar progreso de todos los estudiantes inscritos
+    // Ejecutar el batch y obtener resultados
+    const results = await db.batch(operations);
+    const newModuleId = results[0].rows[0].id;
+
+    // Si es el primer módulo, crear progreso para estudiantes existentes
     if (nuevoOrden === 1) {
       await db.execute(
         `INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima)
@@ -145,17 +148,14 @@ router.post("/modules/course/:courseId", async (req, res) => {
         [courseId, newModuleId, courseId]
       );
     }
-
-    await db.execute("COMMIT");
     
     res.json({ 
       success: true, 
       message: "Módulo creado correctamente",
-      moduleId: newModuleId
+      moduleId: Number(newModuleId)
     });
 
   } catch (error) {
-    await db.execute("ROLLBACK");
     console.error("Error creando módulo:", error);
     res.status(500).json({ success: false, error: "Error al crear módulo" });
   }
@@ -477,9 +477,6 @@ router.delete("/modules/:moduleId", async (req, res) => {
   const authHeader = req.headers.authorization;
 
   try {
-    // Iniciar transacción
-    await db.execute("BEGIN");
-
     const moduleInfo = await db.execute(
       `SELECT m.id, m.id_curso, m.orden, c.admin 
        FROM modulos m
@@ -489,7 +486,6 @@ router.delete("/modules/:moduleId", async (req, res) => {
     );
 
     if (moduleInfo.rows.length === 0) {
-      await db.execute("ROLLBACK");
       return res.status(404).json({ error: "Módulo no encontrado" });
     }
 
@@ -500,12 +496,11 @@ router.delete("/modules/:moduleId", async (req, res) => {
       const token = authHeader.split(" ")[1];
       const decoded = jwt.verify(token, JWT_SECRET);
       if (decoded.id !== moduleData.admin) {
-        await db.execute("ROLLBACK");
         return res.status(403).json({ error: "No tienes permiso para eliminar este módulo" });
       }
     }
 
-    // 1. Obtener módulos anterior y siguiente
+    // Obtener módulos anterior y siguiente
     const [prevModule, nextModule] = await Promise.all([
       db.execute(
         "SELECT id FROM modulos WHERE id_curso = ? AND orden < ? ORDER BY orden DESC LIMIT 1",
@@ -517,47 +512,44 @@ router.delete("/modules/:moduleId", async (req, res) => {
       )
     ]);
 
-    // 2. Determinar el módulo al que moveremos a los estudiantes
     const newModuleId = prevModule.rows[0]?.id || nextModule.rows[0]?.id;
+    
+    // Preparar operaciones para el batch
+    const operations = [];
 
-    // 3. Si hay un módulo destino, actualizar el progreso de los estudiantes
+    // 1. Actualizar progreso si hay módulo destino
     if (newModuleId) {
-      await db.execute(
-        `UPDATE progreso_modulo 
-         SET id_modulo_actual = ?
-         WHERE id_curso = ? AND id_modulo_actual = ?`,
-        [newModuleId, moduleData.id_curso, moduleId]
-      );
+      operations.push({
+        sql: `UPDATE progreso_modulo 
+              SET id_modulo_actual = ?
+              WHERE id_curso = ? AND id_modulo_actual = ?`,
+        args: [newModuleId, moduleData.id_curso, moduleId]
+      });
     }
 
-    // 4. Eliminar pruebas, contenido y grabaciones del módulo
-    await Promise.all([
-      db.execute("DELETE FROM pruebas_modulo WHERE id_modulo = ?", [moduleId]),
-      db.execute("DELETE FROM contenido WHERE id_modulo = ?", [moduleId]),
-      db.execute("DELETE FROM grabaciones WHERE id_modulo = ?", [moduleId])
-    ]);
-
-    // 5. Eliminar el módulo
-    await db.execute("DELETE FROM modulos WHERE id = ?", [moduleId]);
-
-    // 6. Reordenar los módulos restantes
-    await db.execute(
-      `UPDATE modulos 
-       SET orden = orden - 1 
-       WHERE id_curso = ? AND orden > ?`,
-      [moduleData.id_curso, moduleData.orden]
+    // 2. Eliminar contenido relacionado
+    operations.push(
+      { sql: "DELETE FROM pruebas_modulo WHERE id_modulo = ?", args: [moduleId] },
+      { sql: "DELETE FROM contenido WHERE id_modulo = ?", args: [moduleId] },
+      { sql: "DELETE FROM grabaciones WHERE id_modulo = ?", args: [moduleId] },
+      { sql: "DELETE FROM modulos WHERE id = ?", args: [moduleId] },
+      { 
+        sql: `UPDATE modulos SET orden = orden - 1 
+              WHERE id_curso = ? AND orden > ?`,
+        args: [moduleData.id_curso, moduleData.orden]
+      }
     );
 
-    await db.execute("COMMIT");
+    // Ejecutar todas las operaciones en un batch
+    await db.batch(operations);
 
     res.json({ 
       success: true, 
       message: "Módulo eliminado exitosamente",
-      newModuleId 
+      newModuleId: newModuleId ? Number(newModuleId) : null
     });
 
   } catch (error) {
-    await db.execute("ROLLBACK");
     console.error("Error eliminando módulo:", error);
     res.status(500).json({ 
       error: "Error al eliminar módulo", 
