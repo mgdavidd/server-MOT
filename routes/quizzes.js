@@ -62,10 +62,10 @@ INSTRUCCIONES CRÍTICAS DE FORMATO:
 - Evita preguntas ambiguas o con múltiples respuestas válidas.
 
 FORMATO DE TEXTO IMPORTANTE:
-- Usa saltos de línea (\n) cuando sea necesario para mejorar la legibilidad
+- Usa saltos de línea (\\n) cuando sea necesario para mejorar la legibilidad
 - Si una pregunta incluye código, ejemplos o listas, usa saltos de línea apropiados
-- Para código o ejemplos técnicos, separa cada línea con \n y guiones para listas
-- Las opciones también pueden usar \n si contienen múltiples líneas
+- Para código o ejemplos técnicos, separa cada línea con \\n y guiones para listas
+- Las opciones también pueden usar \\n si contienen múltiples líneas
 - Mantén el texto limpio y bien estructurado
 - Ejemplo de pregunta con código:
   "¿Cuál es la salida del siguiente código?\n\nconst x = 5;\nconst y = 10;\nconsole.log(x + y);"
@@ -82,6 +82,13 @@ FORMATO DE TEXTO IMPORTANTE:
 FORMATO DE RESPUESTA:
 Debes responder ÚNICAMENTE con un array JSON válido, sin texto adicional, sin markdown, sin explicaciones.
 
+IMPORTANTE - PRESERVAR FORMATO:
+- Cuando uses saltos de línea en el texto, usa el carácter \\n (barra invertida + n)
+- Los saltos de línea deben aparecer como \\n en el JSON
+- Esto permite que el texto se muestre correctamente con formato
+- Para código, usa \\n entre cada línea
+- NO uses saltos de línea reales en el JSON, solo el carácter escapado \\n
+
 ESTRUCTURA EXACTA:
 [
   {
@@ -93,6 +100,20 @@ ESTRUCTURA EXACTA:
       "Opción incorrecta D"
     ],
     "respuestaCorrecta": 1
+  }
+]
+
+EJEMPLO CON FORMATO MULTILÍNEA:
+[
+  {
+    "texto": "Observa el siguiente código:\\n\\nfunction suma(a, b) {\\n  return a + b;\\n}\\n\\n¿Qué retorna suma(3, 5)?",
+    "opciones": [
+      "Retorna: 8",
+      "Retorna: 35",
+      "Retorna: undefined",
+      "Genera un error"
+    ],
+    "respuestaCorrecta": 0
   }
 ]`,
         },
