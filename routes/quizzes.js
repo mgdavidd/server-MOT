@@ -54,12 +54,23 @@ router.post("/modules/quizzes/ai", async (req, res) => {
 CONTENIDO DEL CURSO:
 ${contexto}
 
-INSTRUCCIONES:
+INSTRUCCIONES CRÍTICAS DE FORMATO:
 - Nivel ${nivel_dificultad}: ${getNivelDescription(nivel_dificultad)}
 - Cada pregunta debe tener entre 3 y 5 opciones distintas entre sí.
 - Solo una opción debe ser correcta.
 - Las preguntas deben estar directamente relacionadas con el contenido proporcionado.
-- Evita preguntas ambiguas o con múltiples respuestas válidas.`;
+- Evita preguntas ambiguas o con múltiples respuestas válidas.
+
+FORMATO DE TEXTO IMPORTANTE:
+- Usa saltos de línea (\n) cuando sea necesario para mejorar la legibilidad
+- Si una pregunta incluye código, ejemplos o listas, usa saltos de línea apropiados
+- Para código o ejemplos técnicos, separa cada línea con \n y guiones para listas
+- Las opciones también pueden usar \n si contienen múltiples líneas
+- Mantén el texto limpio y bien estructurado
+- Ejemplo de pregunta con código:
+  "¿Cuál es la salida del siguiente código?\n\nconst x = 5;\nconst y = 10;\nconsole.log(x + y);"
+- Ejemplo de opción con múltiples líneas:
+  "Opción A:\nPrimera línea\nSegunda línea"`
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
