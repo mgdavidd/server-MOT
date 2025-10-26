@@ -36,7 +36,6 @@ router.post("/create-course", async (req, res) => {
   if (validationError) return res.status(400).json({ error: validationError });
 
   try {
-    // Verificar si el usuario es profesor
     const [usuario, cursoExistente] = await Promise.all([
       db.execute("SELECT * FROM usuarios WHERE id = ? AND rol = 'profesor'", [admin]),
       db.execute("SELECT * FROM cursos WHERE nombre = ? AND admin = ?", [nombre, admin])
@@ -49,7 +48,6 @@ router.post("/create-course", async (req, res) => {
       return res.status(409).json({ error: "Ya existe un curso con ese nombre para este profesor" });
     }
 
-    // Crear curso
     const fechaActual = DateTime.utc().toISO();
     const result = await db.execute(
       `INSERT INTO cursos (nombre, fecha, precio, descripcion, admin, tipoCurso, genero, portada)
@@ -152,20 +150,17 @@ router.post("/courses/:courseId/video/introduction", upload.single("video"), asy
   try {
     if (!req.file) throw new Error("Archivo de video no recibido");
 
-    // Verificar que el curso exista
     const curso = await db.execute("SELECT admin FROM cursos WHERE id = ?", [courseId]);
     if (curso.rows.length === 0) {
       return res.status(404).json({ error: "Curso no encontrado" });
     }
 
-    // Verificar si ya tiene video
     const existing = await db.execute("SELECT 1 FROM video_introduccion WHERE id_curso = ?", [courseId]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: "El curso ya tiene un video de introducción" });
     }
 
     const adminId = curso.rows[0].admin;
-
     const { auth, folderId } = await getAdminDriveClient(adminId);
     const drive = google.drive({ version: "v3", auth });
 
@@ -182,6 +177,15 @@ router.post("/courses/:courseId/video/introduction", upload.single("video"), asy
         body: fs.createReadStream(req.file.path),
       },
       fields: "id,webViewLink",
+    });
+
+    // 🔓 Hacer el archivo público para visualización y lectura
+    await drive.permissions.create({
+      fileId: data.id,
+      requestBody: {
+        role: "reader",
+        type: "anyone",
+      },
     });
 
     await db.execute("INSERT INTO video_introduccion (link, id_curso) VALUES (?, ?)", [
@@ -212,13 +216,11 @@ router.get("/courses/:courseId/video/introduction", async (req, res) => {
   }
 });
 
-
 router.get("/courses/:courseId", async (req, res) => {
   const cursos = await db.execute(
     "SELECT * FROM cursos WHERE id = ?",
     [req.params.courseId]
   )
-
   res.json(cursos.rows)
 })
 
@@ -268,7 +270,6 @@ router.delete("/del/courses/:courseId", async (req, res) => {
   }
 });
 
-// Modificar la ruta de inscripción
 router.post("/inscription/course", async (req, res) => {
   const { userId, courseId } = req.body;
 
@@ -277,7 +278,6 @@ router.post("/inscription/course", async (req, res) => {
       return res.status(400).json({ error: "Faltan datos requeridos" });
     }
 
-    // Verificar inscripción existente
     const existingEnrollment = await db.execute(
       "SELECT 1 FROM cursos_estudiante WHERE idUsuario = ? AND idCurso = ?", 
       [userId, courseId]
@@ -287,13 +287,11 @@ router.post("/inscription/course", async (req, res) => {
       return res.status(409).json({ error: "Ya estás inscrito en este curso" });
     }
 
-    // Obtener el primer módulo del curso (si existe)
     const firstModule = await db.execute(
       "SELECT id FROM modulos WHERE id_curso = ? ORDER BY orden ASC LIMIT 1",
       [courseId]
     );
 
-    // Preparar las operaciones para el batch
     const operations = [
       {
         sql: "INSERT INTO cursos_estudiante (idUsuario, idCurso) VALUES (?, ?)",
@@ -301,7 +299,6 @@ router.post("/inscription/course", async (req, res) => {
       }
     ];
 
-    // Agregar creación de progreso si existe un primer módulo
     if (firstModule.rows.length > 0) {
       operations.push({
         sql: `INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima)
@@ -310,7 +307,6 @@ router.post("/inscription/course", async (req, res) => {
       });
     }
 
-    // Ejecutar todas las operaciones en un batch (transacción atómica)
     await db.batch(operations);
 
     res.status(200).json({ 

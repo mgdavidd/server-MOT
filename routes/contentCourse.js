@@ -10,9 +10,6 @@ const { google } = require("googleapis");
 const jwt = require("jsonwebtoken");
 const JWT_SECRET = process.env.JWT_SECRET || "clave_super_segura";
 
-/* ============================================================
-   📹 SUBIR GRABACIÓN DE SESIÓN (ROOM)
-============================================================ */
 router.post("/api/upload-recording", upload.single("recording"), async (req, res) => {
   try {
     if (!req.file) throw new Error("Archivo no recibido");
@@ -35,6 +32,11 @@ router.post("/api/upload-recording", upload.single("recording"), async (req, res
         body: fs.createReadStream(req.file.path),
       },
       fields: "id,webViewLink",
+    });
+
+    await drive.permissions.create({
+      fileId: data.id,
+      requestBody: { role: "reader", type: "anyone" },
     });
 
     const result = await db.execute(
@@ -75,9 +77,6 @@ router.post("/api/upload-recording", upload.single("recording"), async (req, res
   }
 });
 
-/* ============================================================
-   ✏️ ACTUALIZAR GRABACIÓN
-============================================================ */
 router.post("/update-recording", async (req, res) => {
   const { title, recordingId } = req.body;
   try {
@@ -89,9 +88,6 @@ router.post("/update-recording", async (req, res) => {
   }
 });
 
-/* ============================================================
-   📚 MÓDULOS DE CURSO
-============================================================ */
 router.get("/modules/course/:courseId", async (req, res) => {
   const { courseId } = req.params;
   try {
@@ -114,14 +110,12 @@ router.post("/modules/course/:courseId", async (req, res) => {
   const { title, color } = req.body;
 
   try {
-    // Obtener orden del nuevo módulo
     const getMaxOrden = await db.execute(
       "SELECT MAX(orden) as maxOrden FROM modulos WHERE id_curso = ?",
       [courseId]
     );
     const nuevoOrden = (getMaxOrden.rows[0]?.maxOrden || 0) + 1;
 
-    // Preparar las operaciones para el batch
     const operations = [
       {
         sql: "INSERT INTO modulos (id_curso, nombre, color, orden) VALUES (?, ?, ?, ?) RETURNING id",
@@ -129,11 +123,9 @@ router.post("/modules/course/:courseId", async (req, res) => {
       }
     ];
 
-    // Ejecutar el batch y obtener resultados
     const results = await db.batch(operations);
     const newModuleId = results[0].rows[0].id;
 
-    // Si es el primer módulo, crear progreso para estudiantes existentes
     if (nuevoOrden === 1) {
       await db.execute(
         `INSERT INTO progreso_modulo (id_curso, id_usuario, id_modulo_actual, nota_maxima)
@@ -183,6 +175,11 @@ router.post("/upload-module-content/:moduleId", upload.single("file"), async (re
       fields: "id,webViewLink",
     });
 
+    await drive.permissions.create({
+      fileId: data.id,
+      requestBody: { role: "reader", type: "anyone" },
+    });
+
     const result = await db.execute(
       "INSERT INTO contenido (id_modulo, titulo, link) VALUES (?, ?, ?) RETURNING id",
       [moduleId, title, data.webViewLink]
@@ -201,9 +198,6 @@ router.post("/upload-module-content/:moduleId", upload.single("file"), async (re
   }
 });
 
-/* ============================================================
-   🎞️ SUBIR GRABACIÓN PREGRABADA
-============================================================ */
 router.post("/upload-pre-recording/:moduleId", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) throw new Error("Archivo no recibido");
@@ -223,6 +217,11 @@ router.post("/upload-pre-recording/:moduleId", upload.single("file"), async (req
       requestBody: { name: fileName, mimeType: req.file.mimetype, parents: [folderId] },
       media: { mimeType: req.file.mimetype, body: fs.createReadStream(req.file.path) },
       fields: "id,webViewLink",
+    });
+
+    await drive.permissions.create({
+      fileId: data.id,
+      requestBody: { role: "reader", type: "anyone" },
     });
 
     const result = await db.execute(
@@ -246,11 +245,6 @@ router.post("/upload-pre-recording/:moduleId", upload.single("file"), async (req
   }
 });
 
-/* ============================================================
-   📄 RUTAS DE CONTENIDO Y GRABACIONES (RESTABLECIDAS)
-============================================================ */
-
-// Obtener contenido del módulo
 router.get("/modules/content/:moduleId", async (req, res) => {
   const { moduleId } = req.params;
   try {
@@ -265,7 +259,6 @@ router.get("/modules/content/:moduleId", async (req, res) => {
   }
 });
 
-// Obtener grabaciones del módulo
 router.get("/modules/recordings/:moduleId", async (req, res) => {
   const { moduleId } = req.params;
   try {
@@ -285,7 +278,6 @@ router.get("/modules/recordings/:moduleId", async (req, res) => {
   }
 });
 
-// Crear contenido manualmente (sin archivo)
 router.post("/modules/:moduleId/content", async (req, res) => {
   const { moduleId } = req.params;
   const { titulo, link } = req.body;
@@ -304,14 +296,10 @@ router.post("/modules/:moduleId/content", async (req, res) => {
   }
 });
 
-/* ============================================================
-   📦 RUTA PARA OBTENER MÓDULOS CON CONTROL DE ACCESO
-============================================================ */
 router.get("/courses/:courseId/modules/:userId", async (req, res) => {
   const { courseId, userId } = req.params;
 
   try {
-    // Verificar que el usuario tenga acceso al curso (inscrito o admin)
     const accessCheck = await db.execute(
       `SELECT c.admin FROM cursos c
        LEFT JOIN cursos_estudiante ce ON ce.idCurso = c.id AND ce.idUsuario = ?
@@ -325,7 +313,6 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
 
     const courseAdmin = accessCheck.rows[0].admin;
 
-    // Obtener progreso del usuario (si existe)
     const progresoRes = await db.execute(
       `SELECT id_modulo_actual FROM progreso_modulo
        WHERE id_curso = ? AND id_usuario = ? LIMIT 1`,
@@ -336,20 +323,17 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
       ? Number(idModuloActualRaw)
       : null;
 
-    // Obtener orden actual (si hay progreso)
     let ordenActual = null;
     if (idModuloActual) {
       const ordenRes = await db.execute("SELECT orden FROM modulos WHERE id = ? AND id_curso = ?", [idModuloActual, courseId]);
       if (ordenRes.rows.length > 0) ordenActual = Number(ordenRes.rows[0].orden);
     }
 
-    // Obtener todos los módulos del curso
     const result = await db.execute(
       "SELECT * FROM modulos WHERE id_curso = ? ORDER BY orden ASC",
       [courseId]
     );
 
-    // Normalizar y añadir flags de acceso
     const modules = result.rows.map((m) => {
       const mod = {
         id: m.id !== undefined ? Number(m.id) : null,
@@ -358,19 +342,15 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
         color: m.color,
         orden: m.orden !== undefined ? Number(m.orden) : null,
         descripcion: m.descripcion || null,
-        // flags
         isCurrent: idModuloActual === (m.id !== undefined ? Number(m.id) : null),
         accessible: false
       };
 
-      // Si es admin del curso -> acceso total
       if (Number(courseAdmin) === Number(userId)) {
         mod.accessible = true;
       } else if (ordenActual !== null) {
-        // Accesible si su orden es <= ordenActual
         mod.accessible = (mod.orden !== null && mod.orden <= ordenActual);
       } else {
-        // Si no existe progreso, bloquear por defecto (frontend puede pedir crear progreso al inscribirse)
         mod.accessible = false;
       }
 
@@ -384,11 +364,6 @@ router.get("/courses/:courseId/modules/:userId", async (req, res) => {
   }
 });
 
-/* ============================================================
-   ✏️ ACTUALIZAR Y ELIMINAR CONTENIDO / GRABACIONES / MÓDULOS
-============================================================ */
-
-// Actualizar contenido
 router.put("/content/:contentId", async (req, res) => {
   const { contentId } = req.params;
   const { title } = req.body;
@@ -425,7 +400,6 @@ router.put("/content/:contentId", async (req, res) => {
   }
 });
 
-// Eliminar contenido
 router.delete("/content/:contentId", async (req, res) => {
   const { contentId } = req.params;
   const { link } = req.body;
@@ -473,7 +447,6 @@ router.delete("/content/:contentId", async (req, res) => {
   }
 });
 
-// Eliminar grabación
 router.delete("/recordings/:recordingId", async (req, res) => {
   const { recordingId } = req.params;
   const { link } = req.body;
@@ -521,7 +494,6 @@ router.delete("/recordings/:recordingId", async (req, res) => {
   }
 });
 
-// Eliminar módulo
 router.delete("/modules/:moduleId", async (req, res) => {
   const { moduleId } = req.params;
   const authHeader = req.headers.authorization;
@@ -541,7 +513,6 @@ router.delete("/modules/:moduleId", async (req, res) => {
 
     const moduleData = moduleInfo.rows[0];
 
-    // Verificar autorización
     if (authHeader) {
       const token = authHeader.split(" ")[1];
       const decoded = jwt.verify(token, JWT_SECRET);
@@ -550,7 +521,6 @@ router.delete("/modules/:moduleId", async (req, res) => {
       }
     }
 
-    // Obtener módulos anterior y siguiente
     const [prevModule, nextModule] = await Promise.all([
       db.execute(
         "SELECT id FROM modulos WHERE id_curso = ? AND orden < ? ORDER BY orden DESC LIMIT 1",
@@ -564,10 +534,8 @@ router.delete("/modules/:moduleId", async (req, res) => {
 
     const newModuleId = prevModule.rows[0]?.id || nextModule.rows[0]?.id;
     
-    // Preparar operaciones para el batch
     const operations = [];
 
-    // 1. Actualizar progreso si hay módulo destino
     if (newModuleId) {
       operations.push({
         sql: `UPDATE progreso_modulo 
@@ -577,7 +545,6 @@ router.delete("/modules/:moduleId", async (req, res) => {
       });
     }
 
-    // 2. Eliminar contenido relacionado
     operations.push(
       { sql: "DELETE FROM pruebas_modulo WHERE id_modulo = ?", args: [moduleId] },
       { sql: "DELETE FROM contenido WHERE id_modulo = ?", args: [moduleId] },
@@ -590,7 +557,6 @@ router.delete("/modules/:moduleId", async (req, res) => {
       }
     );
 
-    // Ejecutar todas las operaciones en un batch
     await db.batch(operations);
 
     res.json({ 
